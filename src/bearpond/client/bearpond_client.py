@@ -263,15 +263,19 @@ class BearpondClient:
 
     # ------------------------------------------------------------------------------------------------------------------
     def sync(self, server: server_client.ServerClient, dry_run: bool = False) -> None:
-        manifest: types.Manifest = server.get_manifest()
+        # let's make sure that the workdir exists
         self.workdir.mkdir(parents=True, exist_ok=True)
 
+        # get the manifest from the server
+        manifest: types.Manifest = server.get_manifest()
         manifest_files: dict[str, SyncedFileState] = {
             f.path: SyncedFileState(size=f.size, sha256=f.sha256) for f in manifest.files
         }
+        
+        # get the workspace seq and file metadata
         old_seq: int
-        synced: dict[str, SyncedFileState]
         old_seq, synced = self._load_synced_state()
+        synced: dict[str, SyncedFileState]
 
         to_download: list = [p for p in manifest_files if synced.get(p) != manifest_files[p]]
         to_delete: list = [p for p in synced if p not in manifest_files]
