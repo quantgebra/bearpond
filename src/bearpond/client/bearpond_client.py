@@ -31,12 +31,22 @@ class WorkspaceStatus(BaseModel):
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def prune_empty_dirs(root: Path, start: Path) -> None:
-    # called after deleting a file during sync, so an emptied-out hive partition directory doesn't linger behind
-    current: Path = start.parent
-    while current != root and current.exists() and not any(current.iterdir()):
-        current.rmdir()
-        current = current.parent
+def prune_empty_dirs(root: Path) -> None:
+    # removes every empty directory under root, deepest first so parents become empty in turn. Deliberately a
+    # root-to-tip sweep: rglob can never escape root, and rmdir only ever removes empty directories — so unlike
+    # an upward walk from the deleted file, no bug in a caller can make this touch anything outside root.
+    if root.is_dir():
+        dirs: list[Path] = sorted(
+            (p for p in root.rglob("*") if p.is_dir() and not p.is_symlink()),
+            key=lambda p: len(p.parts),
+            reverse=True,
+        )
+        for directory in dirs:
+            try:
+                directory.rmdir()
+            except OSError:
+                # non-empty or otherwise unremovable — pruning is best-effort cleanup, leftovers are harmless
+                pass
 
 
 # ======================================================================================================================
@@ -280,7 +290,7 @@ class BearpondClient:
         for f in manifest.removed:
             doomed: Path = self.workdir / f.path
             doomed.unlink(missing_ok=True)
-            prune_empty_dirs(self.workdir, doomed)
+        prune_empty_dirs(self.workdir)
         self._save_manifest(new_manifest)
         (self.workdir / PENDING_NAME).unlink(missing_ok=True)
         return result
@@ -342,9 +352,13 @@ class BearpondClient:
             for rel_path in to_delete:
                 dest_path = self.workdir / rel_path
                 dest_path.unlink(missing_ok=True)
-                prune_empty_dirs(self.workdir, dest_path)
                 print(f"  pruned: {rel_path}")
+                
+            # need to prune empty directories if we deleted any files
+            if to_delete:
+                prune_empty_dirs(self.workdir)
 
+            # we've updated to the new manifest, so let's make it official
             self._save_manifest(manifest)
             (self.workdir / PENDING_NAME).unlink(missing_ok=True)
             print(

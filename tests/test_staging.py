@@ -164,6 +164,28 @@ def test_rm_commit_removes_from_lake_and_workspace(workdir: Path, live_server: s
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_prune_empty_dirs_sweeps_empties_but_keeps_files_and_root(tmp_path: Path) -> None:
+    root: Path = tmp_path / "mirror"
+    (root / "year=2024/month=01").mkdir(parents=True)
+    (root / "year=2024/month=02").mkdir(parents=True)
+    (root / "year=2024/month=02/part.parquet").write_bytes(b"data")
+
+    bearpond_client.prune_empty_dirs(root)
+
+    # empty partition dirs are gone; the file, its ancestors, and root itself survive
+    assert not (root / "year=2024/month=01").exists()
+    assert (root / "year=2024/month=02/part.parquet").read_bytes() == b"data"
+    assert root.is_dir()
+
+    # a completely empty tree prunes down to root — but never root itself
+    other: Path = tmp_path / "empty-mirror"
+    (other / "a=b/c=d").mkdir(parents=True)
+    bearpond_client.prune_empty_dirs(other)
+    assert other.is_dir()
+    assert list(other.iterdir()) == []
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_status_reports_staged_untracked_modified_and_missing(workdir: Path) -> None:
     # workspace state: PATH_A clean, OTHER_PATH tampered (hash differs), one path gone from disk entirely
     workspace_files: dict = {
