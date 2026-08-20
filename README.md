@@ -60,7 +60,8 @@ bearpond commit -m "january trades"     # begin + upload + commit as one short t
 
 ```bash
 bearpond sync --target ./mirror
-# ./mirror now holds the lake in hive layout, tracked in ./mirror/_synced.json
+# ./mirror now holds the lake in hive layout, with ./mirror/_manifest.json recording exactly
+# which server manifest it represents
 ```
 
 **Auth:** the server checks a bearer token when `BEARPOND_TOKEN` is set (unset = open, for local use). The CLI reads the same variable. Real multi-user auth is on the roadmap (below).

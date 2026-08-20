@@ -18,6 +18,17 @@ CONTENT = b"fake parquet bytes"
 OTHER_CONTENT = b"other parquet bytes"
 
 
+# ----------------------------------------------------------------------------------------------------------------------
+def write_workspace_manifest(workdir: Path, seq: int, files: dict[str, list]) -> None:
+    # a _manifest.json in the current format: the verbatim manifest dump
+    manifest: dict = {
+        "seq": seq,
+        "created_at": None,
+        "files": [{"path": p, "size": v[0], "sha256": v[1]} for p, v in files.items()],
+    }
+    (workdir / bearpond_client.MANIFEST_NAME).write_text(json.dumps(manifest))
+
+
 # ======================================================================================================================
 @pytest.fixture
 def workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -103,7 +114,7 @@ def test_cmd_commit_with_nothing_staged(workdir: Path, live_server: str) -> None
 # ----------------------------------------------------------------------------------------------------------------------
 def test_rm_stages_removal_with_recorded_metadata(workdir: Path) -> None:
     workspace_files: dict = {HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]}
-    (workdir / bearpond_client.WORKSPACE_STATE_NAME).write_text(json.dumps({"seq": 3, "files": workspace_files}))
+    write_workspace_manifest(workdir, 3, workspace_files)
 
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
     manifest: types.TransactionManifest = workspace.rm([Path(HIVE_PATH)])
@@ -160,7 +171,7 @@ def test_status_reports_staged_untracked_modified_and_missing(workdir: Path) -> 
         OTHER_PATH: [len(OTHER_CONTENT), "0" * 64],
         "year=2024/month=03/gone.parquet": [1, "0" * 64],
     }
-    (workdir / bearpond_client.WORKSPACE_STATE_NAME).write_text(json.dumps({"seq": 7, "files": workspace_files}))
+    write_workspace_manifest(workdir, 7, workspace_files)
 
     # one file staged, one simply sitting on disk unknown to the lake
     (workdir / "year=2024/month=04").mkdir(parents=True)

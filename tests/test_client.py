@@ -182,13 +182,70 @@ def test_get_manifest_survives_deleted_exports(
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_old_synced_state_format_reads_as_seq_zero(tmp_path: Path) -> None:
-    # mirrors written before the synced state carried a seq still load, as seq 0
+def test_sync_stores_the_pristine_manifest(client: server_client.ServerClient, source_dir: Path, tmp_path: Path) -> None:
+    commit_source_dir(client, source_dir)
     target: Path = tmp_path / "mirror"
-    target.mkdir()
-    old_format: dict = {PATH_A: [len(CONTENT_A), conftest.sha256_hex(CONTENT_A)]}
-    (target / bearpond_client.WORKSPACE_STATE_NAME).write_text(json.dumps(old_format))
+    bearpond_client.BearpondClient(target).sync(client)
 
+    # the manifest file holds exactly what the server served — field-for-field, not a re-derivation
+    raw: dict = json.loads((target / bearpond_client.MANIFEST_NAME).read_text())
+    assert raw == client.get_manifest().model_dump()
+    assert not (target / bearpond_client.PENDING_NAME).exists()
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_commit_stores_the_pristine_manifest(client: server_client.ServerClient, source_dir: Path) -> None:
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(source_dir)
+    workspace.add([source_dir / PATH_A, source_dir / PATH_B])
+    result: types.CommitResponse = workspace.commit(client, message="initial")
+
+    raw: dict = json.loads((source_dir / bearpond_client.MANIFEST_NAME).read_text())
+    assert raw["seq"] == result.seq == 1
+    assert not (source_dir / bearpond_client.PENDING_NAME).exists()
+    assert workspace.workspace_seq() == 1
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_sync_resumes_from_pending_after_interruption(
+    client: server_client.ServerClient,
+    source_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit_source_dir(client, source_dir)
+    target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    assert workspace.workspace_seq() == 0
-    assert workspace.workspace_files()[PATH_A].sha256 == conftest.sha256_hex(CONTENT_A)
+
+    # a sync that dies after the first download: the completed file is recorded in the pending overlay
+    original = client.download_file
+    calls: list[str] = []
+
+    def fail_after_first(rel_path: str, dest_path: Path) -> str:
+        if calls:
+            raise server_client.BearpondError("boom")
+        calls.append(rel_path)
+        return original(rel_path, dest_path)
+
+    monkeypatch.setattr(client, "download_file", fail_after_first)
+    with pytest.raises(server_client.BearpondError, match="boom"):
+        workspace.sync(client)
+
+    # no manifest yet; the pending file marks the interrupted sync and records the completed download
+    assert not (target / bearpond_client.MANIFEST_NAME).exists()
+    pending: dict = json.loads((target / bearpond_client.PENDING_NAME).read_text())
+    assert list(pending) == [PATH_A]
+
+    # the retry downloads only what the overlay doesn't already cover, then adopts the full manifest
+    def recording(rel_path: str, dest_path: Path) -> str:
+        calls.append(rel_path)
+        return original(rel_path, dest_path)
+
+    monkeypatch.setattr(client, "download_file", recording)
+    calls.clear()
+    workspace.sync(client)
+
+    assert calls == [PATH_B]
+    final: dict = json.loads((target / bearpond_client.MANIFEST_NAME).read_text())
+    assert final["seq"] == 1
+    assert not (target / bearpond_client.PENDING_NAME).exists()
+    assert (target / PATH_B).read_bytes() == CONTENT_B
