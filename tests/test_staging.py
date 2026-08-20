@@ -101,9 +101,9 @@ def test_cmd_commit_with_nothing_staged(workdir: Path, live_server: str) -> None
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_rm_stages_removal_with_synced_metadata(workdir: Path) -> None:
-    synced: dict = {HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]}
-    (workdir / bearpond_client.SYNC_STATE_NAME).write_text(json.dumps({"seq": 3, "files": synced}))
+def test_rm_stages_removal_with_recorded_metadata(workdir: Path) -> None:
+    workspace_files: dict = {HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]}
+    (workdir / bearpond_client.WORKSPACE_STATE_NAME).write_text(json.dumps({"seq": 3, "files": workspace_files}))
 
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
     manifest: types.TransactionManifest = workspace.rm([Path(HIVE_PATH)])
@@ -141,12 +141,12 @@ def test_rm_commit_removes_from_lake_and_workspace(workdir: Path, live_server: s
 
     assert result.seq == 2
 
-    # the lake, the synced state, and the working directory all dropped the path
+    # the lake, the workspace state, and the working directory all dropped the path
     manifest: types.Manifest | None = conftest.current_manifest(repo)
     assert manifest is not None
     assert [f.path for f in manifest.files] == [OTHER_PATH]
-    assert sorted(workspace.synced_files()) == [OTHER_PATH]
-    assert workspace.synced_seq() == 2
+    assert sorted(workspace.workspace_files()) == [OTHER_PATH]
+    assert workspace.workspace_seq() == 2
     assert not (workdir / HIVE_PATH).exists()
     assert not (workdir / "year=2024/month=01").exists()
     assert (workdir / OTHER_PATH).read_bytes() == OTHER_CONTENT
@@ -154,13 +154,13 @@ def test_rm_commit_removes_from_lake_and_workspace(workdir: Path, live_server: s
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_status_reports_staged_untracked_modified_and_missing(workdir: Path) -> None:
-    # synced state: PATH_A clean, OTHER_PATH tampered (hash differs), one path gone from disk entirely
-    synced: dict = {
+    # workspace state: PATH_A clean, OTHER_PATH tampered (hash differs), one path gone from disk entirely
+    workspace_files: dict = {
         HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)],
         OTHER_PATH: [len(OTHER_CONTENT), "0" * 64],
         "year=2024/month=03/gone.parquet": [1, "0" * 64],
     }
-    (workdir / bearpond_client.SYNC_STATE_NAME).write_text(json.dumps({"seq": 7, "files": synced}))
+    (workdir / bearpond_client.WORKSPACE_STATE_NAME).write_text(json.dumps({"seq": 7, "files": workspace_files}))
 
     # one file staged, one simply sitting on disk unknown to the lake
     (workdir / "year=2024/month=04").mkdir(parents=True)
@@ -172,7 +172,7 @@ def test_status_reports_staged_untracked_modified_and_missing(workdir: Path) -> 
     workspace.add([Path("year=2024/month=04/new.parquet")])
 
     status: bearpond_client.WorkspaceStatus = workspace.status()
-    assert status.synced_seq == 7
+    assert status.workspace_seq == 7
     assert [f.path for f in status.staged_added] == ["year=2024/month=04/new.parquet"]
     assert status.untracked == ["year=2025/stray.parquet"]
     assert status.modified == [OTHER_PATH]

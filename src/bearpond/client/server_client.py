@@ -42,7 +42,7 @@ def iter_file_chunks(local_path: Path) -> Iterator[bytes]:
 class ServerClient:
 
     # the transport layer: a thin wrapper over the bearpond HTTP protocol. Knows nothing about local disk
-    # state — workspace concerns (synced state, staging, status) live in bearpond_client.BearpondClient.
+    # state — workspace concerns (workspace state, staging, status) live in bearpond_client.BearpondClient.
 
     # ------------------------------------------------------------------------------------------------------------------
     @staticmethod

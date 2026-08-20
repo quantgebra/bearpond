@@ -271,3 +271,27 @@ for old_path in meta.supersedes:
 This is the reason rule 6 calls for `BaseModel` rather than `TypedDict` for a known shape: a `TypedDict` is a plain `dict` at runtime and *only* supports `["key"]` access — there's no `.attribute` form available for it, no matter how it was constructed. Getting real attribute access means the type actually needs to be a `BaseModel` (or `NamedTuple`/`dataclass`), not a matter of writing the access differently.
 
 This rule is about a value whose type is a known model — it doesn't apply to a plain `dict[K, V]` (e.g. `declared[rel_path]` where `declared: dict[str, DeclaredMeta]` — the outer subscript is an ordinary dict lookup by key; it's `.sha256` on the `DeclaredMeta` result that this rule is about).
+
+## 15. No bare-declare-then-unpack; return a `NamedTuple` instead
+
+Python forbids annotations inside tuple unpacking, so a function returning `tuple[A, B]` forces callers into bare declarations followed by an unannotated unpack — which is rule 3 compliance at the price of readability:
+
+```python
+# Not this:
+def load_state() -> tuple[int, dict[str, SyncedFileState]]: ...
+
+old_seq: int
+synced: dict[str, SyncedFileState]
+old_seq, synced = load_state()
+
+# This:
+class SyncedState(NamedTuple):
+    seq: int
+    files: dict[str, SyncedFileState]
+
+def load_state() -> SyncedState: ...
+
+state: SyncedState = load_state()
+```
+
+When you reach for the bare-declare-then-unpack pattern, treat it as a smell: the function should return a `NamedTuple` (rule 6 already calls for this on positional shapes), giving callers one annotated variable and attribute access (rule 14) instead.

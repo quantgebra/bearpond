@@ -77,10 +77,10 @@ def test_sync_downloads_everything_and_records_state(
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert (target / PATH_B).read_bytes() == CONTENT_B
 
-    state: dict[str, bearpond_client.SyncedFileState] = workspace.synced_files()
+    state: dict[str, bearpond_client.FileState] = workspace.workspace_files()
     assert sorted(state) == [PATH_A, PATH_B]
     assert state[PATH_A].sha256 == conftest.sha256_hex(CONTENT_A)
-    assert workspace.synced_seq() == 1
+    assert workspace.workspace_seq() == 1
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -129,9 +129,9 @@ def test_sync_prunes_removed_files_and_empty_dirs(
     assert not (target / "year=2024/month=01").exists()
     assert (target / "year=2024/month=02").is_dir()
 
-    state: dict[str, bearpond_client.SyncedFileState] = workspace.synced_files()
+    state: dict[str, bearpond_client.FileState] = workspace.workspace_files()
     assert sorted(state) == [PATH_B]
-    assert workspace.synced_seq() == 2
+    assert workspace.workspace_seq() == 2
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -187,8 +187,8 @@ def test_old_synced_state_format_reads_as_seq_zero(tmp_path: Path) -> None:
     target: Path = tmp_path / "mirror"
     target.mkdir()
     old_format: dict = {PATH_A: [len(CONTENT_A), conftest.sha256_hex(CONTENT_A)]}
-    (target / bearpond_client.SYNC_STATE_NAME).write_text(json.dumps(old_format))
+    (target / bearpond_client.WORKSPACE_STATE_NAME).write_text(json.dumps(old_format))
 
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    assert workspace.synced_seq() == 0
-    assert workspace.synced_files()[PATH_A].sha256 == conftest.sha256_hex(CONTENT_A)
+    assert workspace.workspace_seq() == 0
+    assert workspace.workspace_files()[PATH_A].sha256 == conftest.sha256_hex(CONTENT_A)

@@ -8,20 +8,27 @@ from pydantic import BaseModel
 from .. import types
 from . import server_client
 
-SYNC_STATE_NAME = "_synced.json"
+WORKSPACE_STATE_NAME = "_workspace.json"
 STAGED_NAME = "_staged.json"
 
 
 # ======================================================================================================================
-class SyncedFileState(NamedTuple):
+class FileState(NamedTuple):
     size: int
     sha256: str
 
 
 # ======================================================================================================================
+# the contents of _workspace.json: which manifest seq the workspace reflects, plus the per-file state at that seq
+class WorkspaceState(NamedTuple):
+    seq: int
+    files: dict[str, FileState]
+
+
+# ======================================================================================================================
 # everything the workspace knows about how it differs from the lake, from status()
 class WorkspaceStatus(BaseModel):
-    synced_seq: int
+    workspace_seq: int
     staged_added: list[types.FileMetadata]
     staged_removed: list[types.FileMetadata]
     untracked: list[str]
@@ -42,7 +49,7 @@ def prune_empty_dirs(root: Path, start: Path) -> None:
 class BearpondClient:
 
     # the workspace facade: owns the local state of a working directory — which manifest seq it reflects
-    # (_synced.json), what's staged for the next commit (_staged.json), and how the files on disk differ from
+    # (_workspace.json), what's staged for the next commit (_staged.json), and how the files on disk differ from
     # both. Server interaction goes through a server_client.ServerClient handed to the methods that need it.
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -52,23 +59,25 @@ class BearpondClient:
     # --- workspace state files ----------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------
-    def _load_synced_state(self) -> tuple[int, dict[str, SyncedFileState]]:
-        # {"seq": N, "files": {path: [size, sha256]}} — the pre-seq format (a bare path→[size, sha256] dict)
-        # still reads, as seq 0
-        state_path: Path = self.workdir / SYNC_STATE_NAME
-        seq: int = 0
-        files: dict[str, SyncedFileState] = {}
+    def _load_workspace_state(self) -> WorkspaceState:
+        # {"seq": N, "files": {path: [size, sha256]}} — two older on-disk formats still read: the pre-rename
+        # _synced.json filename, and the pre-seq format (a bare path→[size, sha256] dict), which reads as seq 0
+        state_path: Path = self.workdir / WORKSPACE_STATE_NAME
+        state: WorkspaceState = WorkspaceState(seq=0, files={})
         if state_path.exists():
             raw: dict = json.loads(state_path.read_text())
             raw_files: dict[str, list] = raw["files"] if "files" in raw else raw
-            seq = raw.get("seq", 0) if "files" in raw else 0
-            files = {path: SyncedFileState(size=entry[0], sha256=entry[1]) for path, entry in raw_files.items()}
-        return seq, files
+            seq: int = raw.get("seq", 0) if "files" in raw else 0
+            files: dict[str, FileState] = {
+                path: FileState(size=entry[0], sha256=entry[1]) for path, entry in raw_files.items()
+            }
+            state = WorkspaceState(seq=seq, files=files)
+        return state
 
     # ------------------------------------------------------------------------------------------------------------------
-    def _save_synced_state(self, seq: int, files: dict[str, SyncedFileState]) -> None:
+    def _save_workspace_state(self, seq: int, files: dict[str, FileState]) -> None:
         # write to a temp file then rename over the real one, so a reader never observes a half-written state file
-        state_path: Path = self.workdir / SYNC_STATE_NAME
+        state_path: Path = self.workdir / WORKSPACE_STATE_NAME
         tmp_path: Path = state_path.with_suffix(".tmp")
         raw: dict = {"seq": seq, "files": {path: [entry.size, entry.sha256] for path, entry in files.items()}}
         tmp_path.write_text(json.dumps(raw, indent=2))
@@ -93,14 +102,12 @@ class BearpondClient:
     # --- read-only views ----------------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------
-    def synced_seq(self) -> int:
-        seq, _ = self._load_synced_state()
-        return seq
+    def workspace_seq(self) -> int:
+        return self._load_workspace_state().seq
 
     # ------------------------------------------------------------------------------------------------------------------
-    def synced_files(self) -> dict[str, SyncedFileState]:
-        _, files = self._load_synced_state()
-        return files
+    def workspace_files(self) -> dict[str, FileState]:
+        return self._load_workspace_state().files
 
     # ------------------------------------------------------------------------------------------------------------------
     def staged_manifest(self) -> types.TransactionManifest:
@@ -108,9 +115,9 @@ class BearpondClient:
 
     # ------------------------------------------------------------------------------------------------------------------
     def status(self) -> WorkspaceStatus:
-        seq: int
-        synced: dict[str, SyncedFileState]
-        seq, synced = self._load_synced_state()
+        state: WorkspaceState = self._load_workspace_state()
+        seq: int = state.seq
+        workspace_files: dict[str, FileState] = state.files
         staged: types.TransactionManifest = self._load_staged()
         staged_paths: set[str] = {f.path for f in staged.added} | {f.path for f in staged.removed}
 
@@ -120,23 +127,23 @@ class BearpondClient:
         if self.workdir.exists():
             for path in sorted(self.workdir.rglob("*.parquet")):
                 rel_path: str = path.relative_to(self.workdir).as_posix()
-                if rel_path not in synced and rel_path not in staged_paths:
+                if rel_path not in workspace_files and rel_path not in staged_paths:
                     untracked.append(rel_path)
-                elif rel_path in synced:
-                    # drift from what was synced: size short-circuits, hash only when the size still matches
-                    recorded: SyncedFileState = synced[rel_path]
+                elif rel_path in workspace_files:
+                    # drift from what the workspace has recorded: size short-circuits, hash only when the size still matches
+                    recorded: FileState = workspace_files[rel_path]
                     if path.stat().st_size != recorded.size:
                         modified.append(rel_path)
                     else:
                         sha256, _ = server_client.hash_and_size(path)
                         if sha256 != recorded.sha256:
                             modified.append(rel_path)
-        for rel_path in synced:
+        for rel_path in workspace_files:
             if not (self.workdir / rel_path).is_file() and rel_path not in staged_paths:
                 missing.append(rel_path)
 
         return WorkspaceStatus(
-            synced_seq=seq,
+            workspace_seq=seq,
             staged_added=staged.added,
             staged_removed=staged.removed,
             untracked=untracked,
@@ -185,11 +192,11 @@ class BearpondClient:
 
     # ------------------------------------------------------------------------------------------------------------------
     def rm(self, targets: list[Path]) -> types.TransactionManifest:
-        # stages each target for removal in the next commit. The removal entry carries the synced metadata — the
+        # stages each target for removal in the next commit. The removal entry carries the workspace's recorded metadata — the
         # exact content the workspace last observed — which is what the server's safe-removal check compares
         # against, so rm works offline and regardless of the file's current state on disk. Removing a path that
         # is staged for addition but not yet committed simply unstage it: there is nothing in the lake to remove.
-        _, synced = self._load_synced_state()
+        workspace_files: dict[str, FileState] = self._load_workspace_state().files
         manifest: types.TransactionManifest = self._load_staged()
         staged_added: dict[str, types.FileMetadata] = {f.path: f for f in manifest.added}
         staged_removed: dict[str, types.FileMetadata] = {f.path: f for f in manifest.removed}
@@ -201,12 +208,12 @@ class BearpondClient:
             except ValueError:
                 raise server_client.BearpondError(f"path is outside the working directory: {target}")
 
-            if rel_path in staged_added and rel_path not in synced:
+            if rel_path in staged_added and rel_path not in workspace_files:
                 del staged_added[rel_path]
-            elif rel_path not in synced:
+            elif rel_path not in workspace_files:
                 raise server_client.BearpondError(f"not tracked by the workspace: {rel_path}")
             else:
-                observed: SyncedFileState = synced[rel_path]
+                observed: FileState = workspace_files[rel_path]
                 staged_removed[rel_path] = types.FileMetadata(
                     path=rel_path, size=observed.size, sha256=observed.sha256
                 )
@@ -247,18 +254,18 @@ class BearpondClient:
             server.abort(txn_uuid)
             raise
 
-        # the workspace now reflects exactly what the lake holds at this seq — committed additions join the synced
-        # state, and removed paths leave both the synced state and the working directory
+        # the workspace now reflects exactly what the lake holds at this seq — committed additions join the workspace
+        # state, and removed paths leave both the workspace state and the working directory
         (self.workdir / STAGED_NAME).unlink(missing_ok=True)
-        _, synced = self._load_synced_state()
+        workspace_files: dict[str, FileState] = self._load_workspace_state().files
         for f in current:
-            synced[f.path] = SyncedFileState(size=f.size, sha256=f.sha256)
+            workspace_files[f.path] = FileState(size=f.size, sha256=f.sha256)
         for f in manifest.removed:
-            synced.pop(f.path, None)
+            workspace_files.pop(f.path, None)
             doomed: Path = self.workdir / f.path
             doomed.unlink(missing_ok=True)
             prune_empty_dirs(self.workdir, doomed)
-        self._save_synced_state(result.seq, synced)
+        self._save_workspace_state(result.seq, workspace_files)
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -268,17 +275,16 @@ class BearpondClient:
 
         # get the manifest from the server
         manifest: types.Manifest = server.get_manifest()
-        manifest_files: dict[str, SyncedFileState] = {
-            f.path: SyncedFileState(size=f.size, sha256=f.sha256) for f in manifest.files
+        manifest_files: dict[str, FileState] = {
+            f.path: FileState(size=f.size, sha256=f.sha256) for f in manifest.files
         }
         
         # get the workspace seq and file metadata
-        old_seq: int
-        old_seq, synced = self._load_synced_state()
-        synced: dict[str, SyncedFileState]
+        synced_state: WorkspaceState = self._load_workspace_state()
+        workspace_files: dict[str, FileState] = synced_state.files
 
-        to_download: list = [p for p in manifest_files if synced.get(p) != manifest_files[p]]
-        to_delete: list = [p for p in synced if p not in manifest_files]
+        to_download: list = [p for p in manifest_files if workspace_files.get(p) != manifest_files[p]]
+        to_delete: list = [p for p in workspace_files if p not in manifest_files]
 
         print(
             f"manifest-{manifest.seq:08d}: {len(manifest_files)} files "
@@ -293,17 +299,17 @@ class BearpondClient:
         else:
             # state is saved after every single file so a crash or dropped connection mid-sync loses at most the
             # file in flight — and the seq only advances to the new manifest once it is fully reflected on disk
-            state: dict[str, SyncedFileState] = dict(synced)
+            state: dict[str, FileState] = dict(workspace_files)
 
             for rel_path in to_download:
                 dest_path: Path = self.workdir / rel_path
-                expected: SyncedFileState = manifest_files[rel_path]
+                expected: FileState = manifest_files[rel_path]
                 actual_sha256: str = server.download_file(rel_path, dest_path)
                 if actual_sha256 != expected.sha256:
                     dest_path.unlink(missing_ok=True)
                     raise server_client.BearpondError(f"checksum mismatch after fetching {rel_path}")
-                state[rel_path] = SyncedFileState(size=expected.size, sha256=actual_sha256)
-                self._save_synced_state(old_seq, state)
+                state[rel_path] = FileState(size=expected.size, sha256=actual_sha256)
+                self._save_workspace_state(synced_state.seq, state)
                 print(f"  fetched: {rel_path}")
 
             for rel_path in to_delete:
@@ -311,10 +317,10 @@ class BearpondClient:
                 dest_path.unlink(missing_ok=True)
                 prune_empty_dirs(self.workdir, dest_path)
                 del state[rel_path]
-                self._save_synced_state(old_seq, state)
+                self._save_workspace_state(synced_state.seq, state)
                 print(f"  pruned: {rel_path}")
 
-            self._save_synced_state(manifest.seq, state)
+            self._save_workspace_state(manifest.seq, state)
             print(
                 f"Synced to manifest-{manifest.seq:08d}: "
                 f"+{len(to_download)} -{len(to_delete)} (total {len(state)} files)"
