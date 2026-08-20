@@ -1,4 +1,3 @@
-import re
 import uuid
 from pathlib import Path
 
@@ -8,9 +7,6 @@ from . import metadata_store
 from . import object_store
 from . import utils
 from . import transaction
-
-# a hive partition directory segment, e.g. "year=2024" — key=value, no slashes or extra '=' in either side
-_HIVE_PARTITION_SEGMENT: re.Pattern = re.compile(r"^\w+=[^/=]+$")
 
 
 # ======================================================================================================================
@@ -25,16 +21,12 @@ class Repository:
     # ------------------------------------------------------------------------------------------------------------------
     @staticmethod
     def _validate_hive_parquet_path(rel_path: str) -> None:
-        if not rel_path.endswith(".parquet"):
-            raise transaction.TransactionValidationError(f"path is not a parquet file: {rel_path}")
-
-        # every directory segment before the filename must be a hive partition key=value pair
-        segments: list[str] = rel_path.split("/")
-        for segment in segments[:-1]:
-            if not _HIVE_PARTITION_SEGMENT.match(segment):
-                raise transaction.TransactionValidationError(
-                    f"path segment is not a valid hive partition (expected key=value): {segment!r} in {rel_path}"
-                )
+        # the convention itself lives in types.py, shared with the client — here it's just mapped to the
+        # transaction error vocabulary
+        try:
+            types.validate_hive_parquet_path(rel_path)
+        except ValueError as e:
+            raise transaction.TransactionValidationError(str(e)) from e
 
     # ------------------------------------------------------------------------------------------------------------------
     def __init__(self, server_config: config.ServerConfig, store: metadata_store.MetadataStore | None = None) -> None:
@@ -50,13 +42,6 @@ class Repository:
         )
 
     # ------------------------------------------------------------------------------------------------------------------
-    def place_object(self, staged_path: Path, rel_path: str, address: str) -> None:
-        try:
-            self.object_store.insert(address, staged_path)
-        except object_store.ObjectStoreError as e:
-            raise transaction.TransactionConflictError(f"cannot place {rel_path}: {e}") from e
-
-    # ------------------------------------------------------------------------------------------------------------------
     def _commits_dir(self) -> Path:
         return self.manifest_root / self.COMMITS_DIR_NAME
 
@@ -68,7 +53,7 @@ class Repository:
         # asking by seq keeps this correct for recover() re-exports of older records too
         manifest: types.Manifest | None = self.metadata_store.get_manifest(record.seq)
         if manifest is None:
-            raise RepositoryError(f"commit {record.txn_id} recorded but the store has no manifest for seq {record.seq}")
+            raise RepositoryError(f"commit {record.txn_uuid} recorded but the store has no manifest for seq {record.seq}")
 
         self.manifest_root.mkdir(parents=True, exist_ok=True)
         manifest_name: str = f"manifest-{manifest.seq:08d}.json"
@@ -79,14 +64,14 @@ class Repository:
 
         commits_dir: Path = self._commits_dir()
         commits_dir.mkdir(parents=True, exist_ok=True)
-        record_path: Path = commits_dir / f"{record.txn_id}.json"
+        record_path: Path = commits_dir / f"{record.txn_uuid}.json"
         if not record_path.exists():
             utils.atomic_write(record_path, record.model_dump_json(indent=2).encode())
 
     # ------------------------------------------------------------------------------------------------------------------
     def record_commit(
         self,
-        txn_id: str,
+        txn_uuid: str,
         declared: dict[str, transaction.FileMeta],
         removed: dict[str, transaction.FileMeta],
         user: str | None = None,
@@ -96,7 +81,7 @@ class Repository:
         # only fail benignly — recover() re-exports anything missing at next startup.
         try:
             record: metadata_store.CommitRecord = self.metadata_store.commit_changes(
-                txn_id,
+                txn_uuid,
                 added=[types.FileMetadata(path=p, size=m.size, sha256=m.sha256) for p, m in declared.items()],
                 removed=[types.FileMetadata(path=p, size=m.size, sha256=m.sha256) for p, m in removed.items()],
                 user=user,
@@ -174,10 +159,10 @@ class Repository:
         return txn
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_transaction(self, txn_id: str) -> transaction.Transaction:
-        txn: transaction.Transaction = transaction.Transaction(txn_id, self)
+    def get_transaction(self, txn_uuid: str) -> transaction.Transaction:
+        txn: transaction.Transaction = transaction.Transaction(txn_uuid, self)
         if not txn.txn_dir.is_dir():
-            raise transaction.TransactionNotFoundError(f"unknown transaction: {txn_id}")
+            raise transaction.TransactionNotFoundError(f"unknown transaction: {txn_uuid}")
         return txn
 
 

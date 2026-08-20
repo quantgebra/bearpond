@@ -84,7 +84,7 @@ def test_commit_lands_object_manifest_and_record(repo: repository.Repository) ->
     assert manifest.seq == 1
     assert [f.path for f in manifest.files] == [HIVE_PATH]
 
-    record: metadata_store.CommitRecord | None = repo.metadata_store.get_commit_record(txn.txn_id)
+    record: metadata_store.CommitRecord | None = repo.metadata_store.get_commit_record(txn.txn_uuid)
     assert record is not None
     assert record.seq == 1
 

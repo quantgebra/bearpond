@@ -105,7 +105,7 @@ def test_begin_creates_staging_dir_and_state(repo: repository.Repository) -> Non
     assert declared[HIVE_PATH].sha256 == meta.sha256
 
     # the same transaction is reachable by id afterwards, with the same state
-    fetched: transaction.Transaction = repo.get_transaction(txn.txn_id)
+    fetched: transaction.Transaction = repo.get_transaction(txn.txn_uuid)
     assert fetched.load_declared().keys() == declared.keys()
 
 
@@ -131,7 +131,7 @@ def test_commit_writes_manifest_and_record_exports(repo: repository.Repository) 
 
     records: list[metadata_store.CommitRecord] = repo.metadata_store.get_commit_record_list()
     assert len(records) == 1
-    assert (repo.manifest_root / "commits" / f"{records[0].txn_id}.json").is_file()
+    assert (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").is_file()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -142,10 +142,10 @@ def test_recover_reexports_deleted_exports(repo: repository.Repository) -> None:
     # a crash interrupted the export — the files are gone but the store knows the commit happened
     (repo.manifest_root / "manifest-00000001.json").unlink()
     repo.latest_pointer.unlink()
-    (repo.manifest_root / "commits" / f"{records[0].txn_id}.json").unlink()
+    (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").unlink()
 
     repo.recover()
 
     assert (repo.manifest_root / "manifest-00000001.json").is_file()
     assert repo.latest_pointer.read_text().strip() == "manifest-00000001.json"
-    assert (repo.manifest_root / "commits" / f"{records[0].txn_id}.json").is_file()
+    assert (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").is_file()

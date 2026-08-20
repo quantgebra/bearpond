@@ -27,18 +27,18 @@ class MetadataConflictError(MetadataStoreError):
 
 # ======================================================================================================================
 # one record per commit, kept forever — the full history of how the lake reached its current state. Lives in the
-# commits table and is also exported to manifests/commits/{txn_id}.json as part of the durable audit trail. The
+# commits table and is also exported to manifests/commits/{txn_uuid}.json as part of the durable audit trail. The
 # full FileMetadata of every added/removed path is included (not just the paths) so the metadata store can be rebuilt
 # from these exports alone if the sqlite database is ever lost or corrupted.
 #
-# commit_id is the record's content address, git-style: a hash over the change, its position in history
-# (parent_commit_id + seq), when, by whom, and why — making every record self-certifying and the chain of
-# records tamper-evident. txn_id is NOT part of the hash: it's the ephemeral handle of the transaction attempt
+# commit_hash is the record's content address, git-style: a hash over the change, its position in history
+# (parent_commit_hash + seq), when, by whom, and why — making every record self-certifying and the chain of
+# records tamper-evident. txn_uuid is NOT part of the hash: it's the ephemeral handle of the transaction attempt
 # the commit was made through, not part of what the commit certifies.
 class CommitRecord(BaseModel):
-    commit_id: str
-    parent_commit_id: str | None
-    txn_id: str
+    commit_hash: str
+    parent_commit_hash: str | None
+    txn_uuid: str
     seq: int
     committed_at: str
     added: list[types.FileMetadata]
@@ -48,8 +48,8 @@ class CommitRecord(BaseModel):
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def compute_commit_id(
-    parent_commit_id: str | None,
+def compute_commit_hash(
+    parent_commit_hash: str | None,
     seq: int,
     committed_at: str,
     added: list[types.FileMetadata],
@@ -57,13 +57,15 @@ def compute_commit_id(
     user: str | None,
     reason: str | None,
 ) -> str:
-    # fixed field order and compact separators make the hash reproducible from the exported record alone
+    # fixed field order and compact separators make the hash reproducible from the exported record alone.
+    # added/removed are sorted by path before serializing — they're semantically sets, and the hash must depend
+    # only on the change's content, never on list order (same reason git stores tree entries sorted by name)
     payload: dict = {
-        "parent_commit_id": parent_commit_id,
+        "parent_commit_hash": parent_commit_hash,
         "seq": seq,
         "committed_at": committed_at,
-        "added": [f.model_dump() for f in added],
-        "removed": [f.model_dump() for f in removed],
+        "added": [f.model_dump() for f in sorted(added, key=lambda f: f.path)],
+        "removed": [f.model_dump() for f in sorted(removed, key=lambda f: f.path)],
         "user": user,
         "reason": reason,
     }
@@ -72,18 +74,27 @@ def compute_commit_id(
 
 
 # ======================================================================================================================
+# one page of a directory listing: the files directly under a prefix and the distinct immediate subdirectories
+# below it. next_cursor is set when the file page is truncated — pass it back as cursor to get the next page.
+class DirectoryPage(BaseModel):
+    files: list[types.FileMetadata]
+    directories: list[str]
+    next_cursor: str | None
+
+
+# ======================================================================================================================
 class MetadataStore(Protocol):
 
     # the lake's system of record: which content lives at which path, the full history of how it got there, and
     # the manifest sequence. commit_changes is the commit point of a transaction — implementations must make it
-    # atomic (all checks and updates in one storage transaction) and idempotent by txn_id (a retry after a lost
+    # atomic (all checks and updates in one storage transaction) and idempotent by txn_uuid (a retry after a lost
     # response returns the original record).
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_file_metadata(self, path: str) -> types.FileMetadata | None: ...
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_current_file_metadata_list(self, prefix: str | None = None) -> list[types.FileMetadata]: ...
+    def list_directory(self, prefix: str, limit: int, cursor: str | None = None) -> "DirectoryPage": ...
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_current_seq(self) -> int: ...
@@ -94,7 +105,7 @@ class MetadataStore(Protocol):
     # ------------------------------------------------------------------------------------------------------------------
     def commit_changes(
         self,
-        txn_id: str,
+        txn_uuid: str,
         added: list[types.FileMetadata],
         removed: list[types.FileMetadata],
         user: str | None = None,
@@ -102,7 +113,7 @@ class MetadataStore(Protocol):
     ) -> CommitRecord: ...
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record(self, txn_id: str) -> CommitRecord | None: ...
+    def get_commit_record(self, txn_uuid: str) -> CommitRecord | None: ...
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_commit_record_list(self) -> list[CommitRecord]: ...
@@ -132,9 +143,9 @@ class SqliteMetadataStore(MetadataStore):
     CREATE UNIQUE INDEX IF NOT EXISTS objects_live_path ON objects(path) WHERE removed_seq IS NULL;
     
     CREATE TABLE IF NOT EXISTS commits (
-        commit_id TEXT NOT NULL UNIQUE,
-        parent_commit_id TEXT,
-        txn_id TEXT PRIMARY KEY,
+        commit_hash TEXT NOT NULL UNIQUE,
+        parent_commit_hash TEXT,
+        txn_uuid TEXT PRIMARY KEY,
         seq INTEGER NOT NULL,
         committed_at TEXT NOT NULL,
         added TEXT NOT NULL,
@@ -147,12 +158,12 @@ class SqliteMetadataStore(MetadataStore):
     # ------------------------------------------------------------------------------------------------------------------
     @staticmethod
     def _row_to_commit_record(row: tuple) -> CommitRecord:
-        # row columns arrive in the same order the model declares them: commit_id, parent_commit_id, txn_id,
+        # row columns arrive in the same order the model declares them: commit_hash, parent_commit_hash, txn_uuid,
         # seq, committed_at, added, removed, user, reason
         return CommitRecord(
-            commit_id=row[0],
-            parent_commit_id=row[1],
-            txn_id=row[2],
+            commit_hash=row[0],
+            parent_commit_hash=row[1],
+            txn_uuid=row[2],
             seq=row[3],
             committed_at=row[4],
             added=_file_meta_list_adapter.validate_json(row[5]),
@@ -187,22 +198,35 @@ class SqliteMetadataStore(MetadataStore):
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_current_file_metadata_list(self, prefix: str | None = None) -> list[types.FileMetadata]:
+    def list_directory(self, prefix: str, limit: int, cursor: str | None = None) -> "DirectoryPage":
+        # S3-style prefix+delimiter ("/") listing over the live mapping: files directly under the prefix, and the
+        # distinct immediate subdirectories rolled up in sqlite (the standard's Contents + CommonPrefixes).
+        # GLOB rather than LIKE — LIKE is case-insensitive for ASCII in sqlite (wrong for paths), and a
+        # literal-prefix GLOB range-scans the objects_live_path index. Files paginate by key (cursor = the last
+        # file's full path from a previous page); directories are returned in full — they're few by construction.
+        glob_prefix: str = prefix + "*"
+        rest_start: int = len(prefix) + 1  # sqlite substr is 1-based
         with self._lock:
-            rows: list[tuple]
-            if prefix is not None:
-                # GLOB rather than LIKE: LIKE is case-insensitive for ASCII in sqlite (wrong for paths), and a
-                # literal-prefix GLOB range-scans the objects_live_path index instead of scanning the table
-                rows = self._conn.execute(
-                    "SELECT path, size, sha256 FROM objects "
-                    "WHERE removed_seq IS NULL AND path GLOB ? ORDER BY path",
-                    (prefix + "*",),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT path, size, sha256 FROM objects WHERE removed_seq IS NULL ORDER BY path"
-                ).fetchall()
-        return [types.FileMetadata(path=row[0], size=row[1], sha256=row[2]) for row in rows]
+            # one row beyond the limit is how we know the page is truncated
+            file_rows: list[tuple] = self._conn.execute(
+                "SELECT path, size, sha256 FROM objects "
+                "WHERE removed_seq IS NULL AND path GLOB ? AND instr(substr(path, ?), '/') = 0 AND path > ? "
+                "ORDER BY path LIMIT ?",
+                (glob_prefix, rest_start, cursor or "", limit + 1),
+            ).fetchall()
+            dir_rows: list[tuple] = self._conn.execute(
+                "SELECT DISTINCT substr(path, 1, ? + instr(substr(path, ?), '/') - 1) AS dir FROM objects "
+                "WHERE removed_seq IS NULL AND path GLOB ? AND instr(substr(path, ?), '/') > 0 ORDER BY dir",
+                (len(prefix), rest_start, glob_prefix, rest_start),
+            ).fetchall()
+
+        truncated: bool = len(file_rows) > limit
+        page_rows: list[tuple] = file_rows[:limit]
+        return DirectoryPage(
+            files=[types.FileMetadata(path=row[0], size=row[1], sha256=row[2]) for row in page_rows],
+            directories=[row[0] for row in dir_rows],
+            next_cursor=page_rows[-1][0] if truncated and page_rows else None,
+        )
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_current_seq(self) -> int:
@@ -241,12 +265,12 @@ class SqliteMetadataStore(MetadataStore):
         return manifest
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record(self, txn_id: str) -> CommitRecord | None:
+    def get_commit_record(self, txn_uuid: str) -> CommitRecord | None:
         with self._lock:
             row: tuple | None = self._conn.execute(
-                "SELECT commit_id, parent_commit_id, txn_id, seq, committed_at, added, removed, user, reason "
-                "FROM commits WHERE txn_id = ?",
-                (txn_id,),
+                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason "
+                "FROM commits WHERE txn_uuid = ?",
+                (txn_uuid,),
             ).fetchone()
         record: CommitRecord | None = None
         if row is not None:
@@ -256,7 +280,7 @@ class SqliteMetadataStore(MetadataStore):
     # ------------------------------------------------------------------------------------------------------------------
     def commit_changes(
         self,
-        txn_id: str,
+        txn_uuid: str,
         added: list[types.FileMetadata],
         removed: list[types.FileMetadata],
         user: str | None = None,
@@ -265,11 +289,12 @@ class SqliteMetadataStore(MetadataStore):
         record: CommitRecord
         with self._lock:
             # a commit that already recorded itself is a retry after a lost response — answer with the original record
-            existing: CommitRecord | None = self.get_commit_record(txn_id)
+            existing: CommitRecord | None = self.get_commit_record(txn_uuid)
             if existing is not None:
                 record = existing
             else:
                 committed_at: str = datetime.now(timezone.utc).isoformat()
+                
                 # BEGIN IMMEDIATE takes the write lock up front, so the checks below and the updates they guard are
                 # one atomic unit — a concurrent commit can't slip between check and act
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -310,33 +335,33 @@ class SqliteMetadataStore(MetadataStore):
 
                     # the head of the chain becomes this commit's parent, binding it to the full history behind it
                     parent_row: tuple | None = self._conn.execute(
-                        "SELECT commit_id FROM commits ORDER BY seq DESC LIMIT 1"
+                        "SELECT commit_hash FROM commits ORDER BY seq DESC LIMIT 1"
                     ).fetchone()
-                    parent_commit_id: str | None = parent_row[0] if parent_row is not None else None
-                    commit_id: str = compute_commit_id(
-                        parent_commit_id, seq, committed_at, added, removed, user, reason
+                    parent_commit_hash: str | None = parent_row[0] if parent_row is not None else None
+                    commit_hash: str = compute_commit_hash(
+                        parent_commit_hash, seq, committed_at, added, removed, user, reason
                     )
 
                     for added_file in added:
                         self._conn.execute(
                             "INSERT INTO objects (path, size, sha256, added_txn, added_seq) "
                             "VALUES (?, ?, ?, ?, ?)",
-                            (added_file.path, added_file.size, added_file.sha256, txn_id, seq),
+                            (added_file.path, added_file.size, added_file.sha256, txn_uuid, seq),
                         )
                     for removed_file in removed:
                         self._conn.execute(
                             "UPDATE objects SET removed_txn = ?, removed_seq = ? "
                             "WHERE path = ? AND removed_seq IS NULL",
-                            (txn_id, seq, removed_file.path),
+                            (txn_uuid, seq, removed_file.path),
                         )
                     self._conn.execute(
                         "INSERT INTO commits "
-                        "(commit_id, parent_commit_id, txn_id, seq, committed_at, added, removed, user, reason) "
+                        "(commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
-                            commit_id,
-                            parent_commit_id,
-                            txn_id,
+                            commit_hash,
+                            parent_commit_hash,
+                            txn_uuid,
                             seq,
                             committed_at,
                             _file_meta_list_adapter.dump_json(added).decode(),
@@ -351,9 +376,9 @@ class SqliteMetadataStore(MetadataStore):
                     raise
 
                 record = CommitRecord(
-                    commit_id=commit_id,
-                    parent_commit_id=parent_commit_id,
-                    txn_id=txn_id,
+                    commit_hash=commit_hash,
+                    parent_commit_hash=parent_commit_hash,
+                    txn_uuid=txn_uuid,
                     seq=seq,
                     committed_at=committed_at,
                     added=added,
@@ -367,7 +392,7 @@ class SqliteMetadataStore(MetadataStore):
     def get_commit_record_list(self) -> list[CommitRecord]:
         with self._lock:
             rows: list[tuple] = self._conn.execute(
-                "SELECT commit_id, parent_commit_id, txn_id, seq, committed_at, added, removed, user, reason "
+                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason "
                 "FROM commits ORDER BY seq, committed_at"
             ).fetchall()
         return [self._row_to_commit_record(row) for row in rows]

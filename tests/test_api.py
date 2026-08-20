@@ -23,15 +23,15 @@ def begin_add(api: httpx.Client, rel_path: str, content: bytes) -> str:
     meta: dict = conftest.file_meta(rel_path, content).model_dump()
     response: httpx.Response = api.post("/transactions", json={"added": [meta], "removed": []})
     assert response.status_code == 200, response.text
-    return response.json()["txn_id"]
+    return response.json()["txn_uuid"]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def commit_via_api(api: httpx.Client, rel_path: str, content: bytes) -> dict:
-    txn_id: str = begin_add(api, rel_path, content)
-    upload_response: httpx.Response = api.put(f"/transactions/{txn_id}/files/{rel_path}", content=content)
+    txn_uuid: str = begin_add(api, rel_path, content)
+    upload_response: httpx.Response = api.put(f"/transactions/{txn_uuid}/files/{rel_path}", content=content)
     assert upload_response.status_code == 200, upload_response.text
-    commit_response: httpx.Response = api.post(f"/transactions/{txn_id}/commit")
+    commit_response: httpx.Response = api.post(f"/transactions/{txn_uuid}/commit")
     assert commit_response.status_code == 200, commit_response.text
     return commit_response.json()
 
@@ -54,8 +54,8 @@ def test_commit_unknown_transaction_is_404(api: httpx.Client) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_upload_with_wrong_content_is_400(api: httpx.Client) -> None:
-    txn_id: str = begin_add(api, HIVE_PATH, CONTENT)
-    response: httpx.Response = api.put(f"/transactions/{txn_id}/files/{HIVE_PATH}", content=b"not the declared content")
+    txn_uuid: str = begin_add(api, HIVE_PATH, CONTENT)
+    response: httpx.Response = api.put(f"/transactions/{txn_uuid}/files/{HIVE_PATH}", content=b"not the declared content")
     assert response.status_code == 400
 
 
@@ -96,32 +96,63 @@ def test_auth_rejects_missing_and_wrong_tokens(api: httpx.Client, monkeypatch: p
 def test_commit_retry_returns_the_same_result(api: httpx.Client) -> None:
     # a client that lost the first commit response (crash, timeout) can safely retry — the answer comes from the
     # commit record, identical to the original
-    txn_id: str = begin_add(api, HIVE_PATH, CONTENT)
-    api.put(f"/transactions/{txn_id}/files/{HIVE_PATH}", content=CONTENT)
+    txn_uuid: str = begin_add(api, HIVE_PATH, CONTENT)
+    api.put(f"/transactions/{txn_uuid}/files/{HIVE_PATH}", content=CONTENT)
 
-    first: httpx.Response = api.post(f"/transactions/{txn_id}/commit")
-    retry: httpx.Response = api.post(f"/transactions/{txn_id}/commit")
+    first: httpx.Response = api.post(f"/transactions/{txn_uuid}/commit")
+    retry: httpx.Response = api.post(f"/transactions/{txn_uuid}/commit")
     assert first.status_code == 200
     assert retry.status_code == 200
     assert retry.json() == first.json()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_commit_records_the_reason(api: httpx.Client, repo: repository.Repository) -> None:
+    txn_uuid: str = begin_add(api, HIVE_PATH, CONTENT)
+    api.put(f"/transactions/{txn_uuid}/files/{HIVE_PATH}", content=CONTENT)
+
+    response: httpx.Response = api.post(f"/transactions/{txn_uuid}/commit", json={"reason": "why we did it"})
+    assert response.status_code == 200
+
+    record: metadata_store.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
+    assert record is not None
+    assert record.reason == "why we did it"
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_transaction_status_reports_open_committed_and_unknown(api: httpx.Client) -> None:
-    txn_id: str = begin_add(api, HIVE_PATH, CONTENT)
+    txn_uuid: str = begin_add(api, HIVE_PATH, CONTENT)
 
-    open_response: httpx.Response = api.get(f"/transactions/{txn_id}")
+    open_response: httpx.Response = api.get(f"/transactions/{txn_uuid}")
     assert open_response.status_code == 200
-    assert open_response.json() == {"txn_id": txn_id, "status": "open", "seq": None}
+    assert open_response.json() == {"txn_uuid": txn_uuid, "status": "open", "seq": None}
 
-    api.put(f"/transactions/{txn_id}/files/{HIVE_PATH}", content=CONTENT)
-    api.post(f"/transactions/{txn_id}/commit")
+    api.put(f"/transactions/{txn_uuid}/files/{HIVE_PATH}", content=CONTENT)
+    api.post(f"/transactions/{txn_uuid}/commit")
 
-    committed_response: httpx.Response = api.get(f"/transactions/{txn_id}")
+    committed_response: httpx.Response = api.get(f"/transactions/{txn_uuid}")
     assert committed_response.status_code == 200
-    assert committed_response.json() == {"txn_id": txn_id, "status": "committed", "seq": 1}
+    assert committed_response.json() == {"txn_uuid": txn_uuid, "status": "committed", "seq": 1}
 
     assert api.get("/transactions/no-such-txn").status_code == 404
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_directory_listing_over_http(api: httpx.Client) -> None:
+    commit_via_api(api, HIVE_PATH, CONTENT)
+
+    # a prefix whose children are all deeper comes back as directory names relative to the requested path
+    year_response: httpx.Response = api.get("/files/year=2024/")
+    assert year_response.status_code == 200
+    assert year_response.json()["files"] == []
+    assert year_response.json()["directories"] == ["month=01"]
+
+    month_response: httpx.Response = api.get("/files/year=2024/month=01/")
+    assert month_response.status_code == 200
+    assert month_response.json()["files"] == [{"name": "part.parquet", "size": len(CONTENT)}]
+    assert month_response.json()["next_cursor"] is None
+
+    assert api.get("/files/year=1999/").status_code == 404
 
 
 # ----------------------------------------------------------------------------------------------------------------------

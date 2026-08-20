@@ -2,7 +2,7 @@ from pathlib import Path
 
 import conftest
 from bearpond import types
-from bearpond.client import bearpond_client
+from bearpond.client import server_client
 from bearpond.server import metadata_store
 from bearpond.server import repository
 from bearpond.server import transaction
@@ -43,14 +43,14 @@ def test_commit_retries_cleanly_after_partial_object_placement(repo: repository.
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_record_commit_is_idempotent_by_txn_id(repo: repository.Repository) -> None:
+def test_record_commit_is_idempotent_by_txn_uuid(repo: repository.Repository) -> None:
     # crash frozen after the metadata commit but before staging cleanup — a retry must return the original
-    # record, not fail on the duplicate txn_id or bump the seq
+    # record, not fail on the duplicate txn_uuid or bump the seq
     txn: transaction.Transaction = begin_uploaded_txn(repo, {HIVE_PATH: CONTENT})
     declared: dict[str, transaction.FileMeta] = txn.load_declared()
 
-    first: metadata_store.CommitRecord = repo.record_commit(txn.txn_id, declared, {})
-    second: metadata_store.CommitRecord = repo.record_commit(txn.txn_id, declared, {})
+    first: metadata_store.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {})
+    second: metadata_store.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {})
 
     assert second == first
     assert repo.metadata_store.get_current_seq() == 1
@@ -77,10 +77,10 @@ def test_startup_recovers_interrupted_exports(repo: repository.Repository) -> No
 
     (repo.manifest_root / "manifest-00000001.json").unlink()
     repo.latest_pointer.unlink()
-    (repo.manifest_root / "commits" / f"{records[0].txn_id}.json").unlink()
+    (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").unlink()
 
     with conftest.running_server() as url:
-        with bearpond_client.BearpondClient(url) as client:
+        with server_client.ServerClient(url) as client:
             manifest: types.Manifest = client.get_manifest()
 
     assert sorted(f.path for f in manifest.files) == [HIVE_PATH, OTHER_PATH]

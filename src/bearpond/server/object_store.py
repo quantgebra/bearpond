@@ -33,25 +33,23 @@ class ObjectStore:
 
     # ------------------------------------------------------------------------------------------------------------------
     def insert(self, address: str, staged_path: Path) -> None:
-        # the address is a sha256 hash of the file contents, let's verify that the client isn't lying :)
-        actual_address: str = utils.sha256_file(staged_path)
-        if actual_address != address:
-            raise ObjectStoreError(
-                f"staged file content does not match its address: {staged_path} "
-                f"(expected {actual_address}, got {address})"
-            )
-
-        # calculate the physical destination path and "move" the object using native atomic operations
+        # idempotent: if the object is already stored there is nothing to do — its content is right by
+        # construction, because it was verified when it first entered the store. A missing staged file is only
+        # tolerable in that same case: an earlier commit attempt placed the object, then crashed before finishing.
         dest_path: Path = self.get_location_for_address(address)
         if dest_path.exists():
-            # if the object is already stored there is nothing to do since the content is already there
             staged_path.unlink(missing_ok=True)
         elif staged_path.is_file():
-            # we do NOT have a destination file AND the staged file exists
+            # new content entering the store — the address is only the content's hash if we check, so verify
+            # before placing: a staged file could have been corrupted on disk since its (verified) upload
+            actual_address: str = utils.sha256_file(staged_path)
+            if actual_address != address:
+                raise ObjectStoreError(
+                    f"staged file content does not match its address: {staged_path} "
+                    f"(expected {address}, got {actual_address})"
+                )
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged_path, dest_path)
             utils.fsync_dir(dest_path.parent)
         else:
-            # a staged file can be missing ONLY if an attempted commit moved the file, then crashed before finishing.
-            # But then, the dest_path would exist.
             raise ObjectStoreError(f"staged file missing and object not stored: {staged_path} (address {address})")

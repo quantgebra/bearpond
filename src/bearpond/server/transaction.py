@@ -11,6 +11,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from .. import types
 from . import metadata_store
+from . import object_store
 from . import utils
 
 # the repository module is only needed for the type hint below — a real import would create a cycle, since
@@ -58,10 +59,10 @@ _file_meta_adapter: TypeAdapter[dict[str, FileMeta]] = TypeAdapter(dict[str, Fil
 class Transaction:
 
     # ------------------------------------------------------------------------------------------------------------------
-    def __init__(self, txn_id: str, repo: "repository.Repository") -> None:
-        self.txn_id: str = txn_id
+    def __init__(self, txn_uuid: str, repo: "repository.Repository") -> None:
+        self.txn_uuid: str = txn_uuid
         self.repo: "repository.Repository" = repo
-        self.txn_dir: Path = repo.staging_root / txn_id
+        self.txn_dir: Path = repo.staging_root / txn_uuid
 
     # ------------------------------------------------------------------------------------------------------------------
     def load_declared(self) -> dict[str, FileMeta]:
@@ -150,7 +151,7 @@ class Transaction:
         return types.FileMetadata(path=rel_path, size=size, sha256=checksum)
 
     # ------------------------------------------------------------------------------------------------------------------
-    def commit(self) -> types.CommitResponse:
+    def commit(self, reason: str | None = None) -> types.CommitResponse:
         declared: dict[str, FileMeta] = self.load_declared()
         uploaded: dict[str, FileMeta] = self.load_uploaded()
         removed: dict[str, FileMeta] = self.load_removed()
@@ -165,12 +166,15 @@ class Transaction:
             # hash, so a retry after a crash simply finds the object already stored. A crash here leaves orphans
             # for a future GC, never an inconsistency.
             for rel_path, meta in declared.items():
-                self.repo.place_object(self.txn_dir / rel_path, rel_path, meta.sha256)
+                try:
+                    self.repo.object_store.insert(meta.sha256, self.txn_dir / rel_path)
+                except object_store.ObjectStoreError as e:
+                    raise TransactionConflictError(f"cannot place {rel_path}: {e}") from e
 
             # the commit point: one atomic metadata transaction flips every pointer — collision and removal
-            # checks happen inside it, so check-and-act can never race. Idempotent by txn_id, so a client that
+            # checks happen inside it, so check-and-act can never race. Idempotent by txn_uuid, so a client that
             # lost the response can safely retry.
-            record: metadata_store.CommitRecord = self.repo.record_commit(self.txn_id, declared, removed)
+            record: metadata_store.CommitRecord = self.repo.record_commit(self.txn_uuid, declared, removed, reason=reason)
 
             # the staging directory has served its purpose
             if self.txn_dir.exists():
