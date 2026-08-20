@@ -126,17 +126,17 @@ This project's canonical order for a file record is `path, size, sha256`.
 
 ## 8. One file per domain class; its utilities live in that same file
 
-A domain class — a class that's a primary, named concept in the codebase (e.g. `LakesyncClient`) — gets its own file, named after the class in snake_case: `LakesyncClient` lives in `lakesync_client.py`.
+A domain class — a class that's a primary, named concept in the codebase (e.g. `BearpondClient`) — gets its own file, named after the class in snake_case: `BearpondClient` lives in `bearpond_client.py`.
 
-Utility functions and small supporting/utility classes that exist to support that domain class and aren't shared with anything else (exceptions like `LakesyncError`, pure functions like `load_local_state`) live in the same file as the domain class, not split out into a separate utilities module.
+Utility functions and small supporting/utility classes that exist to support that domain class and aren't shared with anything else (exceptions like `BearpondError`, pure functions like `load_local_state`) live in the same file as the domain class, not split out into a separate utilities module.
 
 ```
-lakesync/client/
-  lakesync_client.py   # LakesyncError, SyncedFileState, load_local_state(), ..., class LakesyncClient
+bearpond/client/
+  bearpond_client.py   # BearpondError, SyncedFileState, load_local_state(), ..., class BearpondClient
   cli.py
 ```
 
-**Exception: types shared across independently-deployable components go in a dedicated shared module, not duplicated in each.** `lakesync`'s server and client are meant to stay independently deployable, so they don't import from each other — but the wire-format types they both need to agree on exactly (`DeclaredFile`, `TransactionManifest`, `Manifest`, ...) live in `lakesync/protocol.py`, a module with no dependency on either side, that both `server/` and `client/` import. This is not the same as sharing implementation — `protocol.py` holds only the data shapes exchanged over HTTP, nothing about how either side handles them. Server-only types that happen to look similar (`FileMeta`, `CommitRecord` — persisted to local server state, never sent to the client) stay put in the server file that uses them; moving something to `protocol.py` is warranted only when both sides actually need the same definition.
+**Exception: types shared across independently-deployable components go in a dedicated shared module, not duplicated in each.** `bearpond`'s server and client are meant to stay independently deployable, so they don't import from each other — but the wire-format types they both need to agree on exactly (`DeclaredFile`, `TransactionManifest`, `Manifest`, ...) live in `bearpond/protocol.py`, a module with no dependency on either side, that both `server/` and `client/` import. This is not the same as sharing implementation — `protocol.py` holds only the data shapes exchanged over HTTP, nothing about how either side handles them. Server-only types that happen to look similar (`FileMeta`, `CommitRecord` — persisted to local server state, never sent to the client) stay put in the server file that uses them; moving something to `protocol.py` is warranted only when both sides actually need the same definition.
 
 ## 9. Class body layout: blank line after the declaration; static/class-level members before instance members
 
@@ -148,7 +148,7 @@ Within the class body, static/class-level members come first, before any instanc
 3. Instance members: `__init__`, then other instance methods (dunder methods, private helpers, public methods)
 
 ```python
-class LakesyncClient:
+class BearpondClient:
 
     # ------------------------------------------------------------------------------------------------------------------
     @staticmethod

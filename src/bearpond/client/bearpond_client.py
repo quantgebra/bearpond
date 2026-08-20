@@ -14,7 +14,7 @@ SYNC_STATE_NAME = "_synced.json"
 
 
 # ======================================================================================================================
-class LakesyncError(Exception):
+class BearpondError(Exception):
     pass
 
 
@@ -76,7 +76,7 @@ def iter_file_chunks(local_path: Path) -> Iterator[bytes]:
 
 
 # ======================================================================================================================
-class LakesyncClient:
+class BearpondClient:
 
     # ------------------------------------------------------------------------------------------------------------------
     @staticmethod
@@ -88,17 +88,17 @@ class LakesyncClient:
                 detail = response.json().get("detail", response.text)
             except Exception:
                 detail = response.text
-            raise LakesyncError(f"{response.status_code}: {detail}")
+            raise BearpondError(f"{response.status_code}: {detail}")
 
     # ------------------------------------------------------------------------------------------------------------------
     @staticmethod
-    def declare_files(files: dict[str, Path]) -> list[types.FileMeta]:
+    def declare_files(files: dict[str, Path]) -> list[types.FileMetadata]:
         # pure local hashing, no network call — builds the added-file list begin_transaction() needs, from a mapping
         # of hive-relative path to local file path
-        declared: list[types.FileMeta] = []
+        declared: list[types.FileMetadata] = []
         for rel_path, local_path in files.items():
             sha256, size = hash_and_size(local_path)
-            declared.append(types.FileMeta(path=rel_path, size=size, sha256=sha256))
+            declared.append(types.FileMetadata(path=rel_path, size=size, sha256=sha256))
         return declared
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -112,7 +112,7 @@ class LakesyncClient:
         self._client.close()
 
     # ------------------------------------------------------------------------------------------------------------------
-    def __enter__(self) -> "LakesyncClient":
+    def __enter__(self) -> "BearpondClient":
         return self
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -188,7 +188,7 @@ class LakesyncClient:
                 actual_sha256: str = self.download_file(rel_path, dest_path)
                 if actual_sha256 != expected.sha256:
                     dest_path.unlink(missing_ok=True)
-                    raise LakesyncError(f"checksum mismatch after fetching {rel_path}")
+                    raise BearpondError(f"checksum mismatch after fetching {rel_path}")
                 state[rel_path] = SyncedFileState(size=expected.size, sha256=actual_sha256)
                 save_local_state(target_dir, state)
                 print(f"  fetched: {rel_path}")
@@ -209,7 +209,7 @@ class LakesyncClient:
     # --- writes ------------------------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------
-    def begin_transaction(self, added: list[types.FileMeta], removed: list[types.FileMeta] | None = None) -> str:
+    def begin_transaction(self, added: list[types.FileMetadata], removed: list[types.FileMetadata] | None = None) -> str:
         body: types.TransactionManifest = types.TransactionManifest(added=added, removed=removed or [])
         response: httpx.Response = self._client.post("/transactions", json=body.model_dump(), headers=self._headers())
         self._raise_for_status(response)
@@ -240,19 +240,19 @@ class LakesyncClient:
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
-    def upload_file(self, txn_id: str, rel_path: str, local_path: Path) -> types.FileMeta:
+    def upload_file(self, txn_id: str, rel_path: str, local_path: Path) -> types.FileMetadata:
         response: httpx.Response = self._client.put(
             f"/transactions/{txn_id}/files/{rel_path}", content=iter_file_chunks(local_path), headers=self._headers()
         )
         self._raise_for_status(response)
-        result: types.FileMeta = types.FileMeta.model_validate_json(response.text)
+        result: types.FileMetadata = types.FileMetadata.model_validate_json(response.text)
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
-    def upload_files(self, txn_id: str, files: dict[str, Path]) -> list[types.FileMeta]:
+    def upload_files(self, txn_id: str, files: dict[str, Path]) -> list[types.FileMetadata]:
         # uploads into an already-open transaction; doesn't begin, commit, or abort it — that's the caller's own
         # call to make: begin_transaction() -> upload_files() -> commit() or abort()
-        results: list[types.FileMeta] = []
+        results: list[types.FileMetadata] = []
         for rel_path, local_path in files.items():
             results.append(self.upload_file(txn_id, rel_path, local_path))
         return results

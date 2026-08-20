@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 
 from ... import types
+from .. import metadata_store
 from .. import repository
 from .. import transaction
 from . import dependencies
@@ -21,7 +22,7 @@ def begin_transaction(manifest: types.TransactionManifest) -> types.BeginTransac
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.put("/{txn_id}/files/{rel_path:path}")
-async def upload_file(txn_id: str, rel_path: str, request: Request) -> types.FileMeta:
+async def upload_file(txn_id: str, rel_path: str, request: Request) -> types.FileMetadata:
     txn: transaction.Transaction = repository.get_repository().get_transaction(txn_id)
     return await txn.upload_file(rel_path, request.stream())
 
@@ -37,7 +38,7 @@ def get_transaction_status(txn_id: str) -> types.TransactionStatus:
     except transaction.TransactionNotFoundError:
         # no staging dir — the transaction either never existed (or was aborted), or already committed; the
         # commit record tells the two apart
-        record: repository.CommitRecord | None = repo.load_commit_record(txn_id)
+        record: metadata_store.CommitRecord | None = repo.metadata_store.get_commit_record(txn_id)
         if record is None:
             raise
         result = types.TransactionStatus(txn_id=record.txn_id, status="committed", seq=record.seq)
@@ -55,13 +56,13 @@ def commit_transaction(txn_id: str) -> types.CommitResponse:
     except transaction.TransactionNotFoundError:
         # no staging dir, but a commit record exists — this is a retry of a commit that already finished (e.g. its
         # response was lost to a crash or timeout), so answer from the record instead of failing
-        record: repository.CommitRecord | None = repo.load_commit_record(txn_id)
+        record: metadata_store.CommitRecord | None = repo.metadata_store.get_commit_record(txn_id)
         if record is None:
             raise
         result = types.CommitResponse(
             seq=record.seq,
-            files_added_count=len(record.new_files),
-            files_removed_count=len(record.removed_files),
+            files_added_count=len(record.added),
+            files_removed_count=len(record.removed),
         )
     return result
 

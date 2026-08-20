@@ -2,9 +2,6 @@ import hashlib
 import os
 from pathlib import Path
 
-from fastapi import HTTPException
-from starlette.status import HTTP_400_BAD_REQUEST
-
 CHUNK_SIZE = 1024 * 1024
 
 # note on durability: fsync flushes the kernel's page cache to the storage device. On macOS it still doesn't flush
@@ -12,12 +9,18 @@ CHUNK_SIZE = 1024 * 1024
 # Linux deployment, where fsync means what it says.
 
 
+# ======================================================================================================================
+class InvalidPathError(Exception):
+    # raised by safe_join on path traversal attempts — the API layer maps this to a 400
+    pass
+
+
 # ----------------------------------------------------------------------------------------------------------------------
 def safe_join(base: Path, rel_path: str) -> Path:
     # reject path traversal — rel_path comes straight from the URL or a client, and must resolve to somewhere inside base
     candidate: Path = (base / rel_path).resolve()
     if not candidate.is_relative_to(base.resolve()):
-        raise HTTPException(HTTP_400_BAD_REQUEST, f"invalid path: {rel_path}")
+        raise InvalidPathError(f"invalid path: {rel_path}")
     return candidate
 
 

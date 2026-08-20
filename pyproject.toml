@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lakesync"
+name = "bearpond"
 version = "0.1.0"
 description = "Simple transactional data server and sync client"
 requires-python = ">=3.11"
@@ -21,12 +21,12 @@ dev = [
 ]
 
 [project.scripts]
-lakesync = "lakesync.client.cli:main"
+bearpond = "bearpond.client.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# lets the test suite import lakesync straight from src/ without an editable install
+# lets the test suite import bearpond straight from src/ without an editable install
 pythonpath = ["src"]

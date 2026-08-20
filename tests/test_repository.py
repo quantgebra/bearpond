@@ -3,9 +3,10 @@ from pathlib import Path
 import pytest
 
 import conftest
-from lakesync import types
-from lakesync.server import repository
-from lakesync.server import transaction
+from bearpond import types
+from bearpond.server import metadata_store
+from bearpond.server import repository
+from bearpond.server import transaction
 
 HIVE_PATH = "year=2024/month=01/part.parquet"
 CONTENT = b"fake parquet bytes"
@@ -14,8 +15,8 @@ CONTENT = b"fake parquet bytes"
 # ----------------------------------------------------------------------------------------------------------------------
 def begin(
     repo: repository.Repository,
-    added: list[types.FileMeta] | None = None,
-    removed: list[types.FileMeta] | None = None,
+    added: list[types.FileMetadata] | None = None,
+    removed: list[types.FileMetadata] | None = None,
 ) -> transaction.Transaction:
     return repo.begin_transaction(types.TransactionManifest(added=added or [], removed=removed or []))
 
@@ -47,21 +48,21 @@ def test_begin_allows_top_level_parquet(repo: repository.Repository) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_rejects_duplicate_added_path(repo: repository.Repository) -> None:
-    meta: types.FileMeta = conftest.file_meta(HIVE_PATH, CONTENT)
+    meta: types.FileMetadata = conftest.file_meta(HIVE_PATH, CONTENT)
     with pytest.raises(transaction.TransactionValidationError, match="more than once"):
         begin(repo, added=[meta, meta])
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_rejects_duplicate_removed_path(repo: repository.Repository) -> None:
-    meta: types.FileMeta = conftest.file_meta(HIVE_PATH, CONTENT)
+    meta: types.FileMetadata = conftest.file_meta(HIVE_PATH, CONTENT)
     with pytest.raises(transaction.TransactionValidationError, match="more than once"):
         begin(repo, removed=[meta, meta])
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_rejects_add_remove_overlap(repo: repository.Repository) -> None:
-    meta: types.FileMeta = conftest.file_meta(HIVE_PATH, CONTENT)
+    meta: types.FileMetadata = conftest.file_meta(HIVE_PATH, CONTENT)
     with pytest.raises(transaction.TransactionValidationError, match="both added and removed"):
         begin(repo, added=[meta], removed=[meta])
 
@@ -73,31 +74,31 @@ def test_begin_rejects_removal_of_missing_path(repo: repository.Repository) -> N
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_begin_rejects_removal_with_stale_sha(repo: repository.Repository, repo_root: Path) -> None:
-    conftest.write_lake_file(repo_root, HIVE_PATH, CONTENT)
-    stale: types.FileMeta = conftest.file_meta(HIVE_PATH, b"content the client saw long ago")
+def test_begin_rejects_removal_with_stale_sha(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})
+    stale: types.FileMetadata = conftest.file_meta(HIVE_PATH, b"content the client saw long ago")
     with pytest.raises(transaction.TransactionConflictError, match="has changed"):
         begin(repo, removed=[stale])
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_begin_rejects_add_colliding_with_different_content(repo: repository.Repository, repo_root: Path) -> None:
-    conftest.write_lake_file(repo_root, HIVE_PATH, CONTENT)
+def test_begin_rejects_add_colliding_with_different_content(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})
     with pytest.raises(transaction.TransactionConflictError, match="different content"):
         begin(repo, added=[conftest.file_meta(HIVE_PATH, b"different bytes entirely")])
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_begin_allows_add_byte_identical_to_existing(repo: repository.Repository, repo_root: Path) -> None:
-    # re-adding exactly what's already there is an idempotent no-op, not a conflict
-    conftest.write_lake_file(repo_root, HIVE_PATH, CONTENT)
-    txn: transaction.Transaction = begin(repo, added=[conftest.file_meta(HIVE_PATH, CONTENT)])
-    assert HIVE_PATH in txn.load_declared()
+def test_begin_rejects_byte_identical_readd(repo: repository.Repository) -> None:
+    # re-adding exactly what's already there would commit nothing — a no-op is a client bug, not a success
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})
+    with pytest.raises(transaction.TransactionConflictError, match="no-op"):
+        begin(repo, added=[conftest.file_meta(HIVE_PATH, CONTENT)])
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_creates_staging_dir_and_state(repo: repository.Repository) -> None:
-    meta: types.FileMeta = conftest.file_meta(HIVE_PATH, CONTENT)
+    meta: types.FileMetadata = conftest.file_meta(HIVE_PATH, CONTENT)
     txn: transaction.Transaction = begin(repo, added=[meta])
     assert txn.txn_dir.is_dir()
     declared: dict[str, transaction.FileMeta] = txn.load_declared()
@@ -116,22 +117,35 @@ def test_get_transaction_unknown_id_raises(repo: repository.Repository) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_latest_is_none_on_fresh_repo(repo: repository.Repository) -> None:
-    assert repo.latest() is None
+    assert conftest.current_manifest(repo) is None
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_latest_raises_on_dangling_pointer(repo: repository.Repository) -> None:
-    # a pointer naming a missing manifest is corruption and must be loud — never mistaken for an empty lake
-    repo.manifest_root.mkdir(parents=True)
-    repo.latest_pointer.write_text("manifest-00000001.json")
-    with pytest.raises(repository.RepositoryError, match="dangling"):
-        repo.latest()
+def test_commit_writes_manifest_and_record_exports(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})
+
+    # the exported audit trail: manifest file, _latest pointer, and one commit record per transaction
+    manifest_path: Path = repo.manifest_root / "manifest-00000001.json"
+    assert manifest_path.is_file()
+    assert repo.latest_pointer.read_text().strip() == "manifest-00000001.json"
+
+    records: list[metadata_store.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    assert len(records) == 1
+    assert (repo.manifest_root / "commits" / f"{records[0].txn_id}.json").is_file()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_latest_raises_on_corrupt_manifest(repo: repository.Repository) -> None:
-    repo.manifest_root.mkdir(parents=True)
-    (repo.manifest_root / "manifest-00000001.json").write_text("{not valid json")
-    repo.latest_pointer.write_text("manifest-00000001.json")
-    with pytest.raises(repository.RepositoryError, match="corrupt"):
-        repo.latest()
+def test_recover_reexports_deleted_exports(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})
+    records: list[metadata_store.CommitRecord] = repo.metadata_store.get_commit_record_list()
+
+    # a crash interrupted the export — the files are gone but the store knows the commit happened
+    (repo.manifest_root / "manifest-00000001.json").unlink()
+    repo.latest_pointer.unlink()
+    (repo.manifest_root / "commits" / f"{records[0].txn_id}.json").unlink()
+
+    repo.recover()
+
+    assert (repo.manifest_root / "manifest-00000001.json").is_file()
+    assert repo.latest_pointer.read_text().strip() == "manifest-00000001.json"
+    assert (repo.manifest_root / "commits" / f"{records[0].txn_id}.json").is_file()

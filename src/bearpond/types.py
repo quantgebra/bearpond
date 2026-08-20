@@ -2,13 +2,13 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-# the wire protocol shared by lakesync's server and client — nothing here depends on either, so server and client
+# the wire protocol shared by bearpond's server and client — nothing here depends on either, so server and client
 # both depend on this instead of on each other, staying independently deployable while sharing one definition of
 # the shapes they exchange, instead of two hand-kept-in-sync copies
 
 
 # ======================================================================================================================
-class FileMeta(BaseModel):
+class FileMetadata(BaseModel):
     path: str
     size: int
     sha256: str
@@ -16,10 +16,8 @@ class FileMeta(BaseModel):
 
 # ======================================================================================================================
 class TransactionManifest(BaseModel):
-    added: list[FileMeta] = []
-    # size/sha256 are required (not just the path) so the server can verify a file hasn't changed since the client
-    # last observed it, before removing it
-    removed: list[FileMeta] = []
+    added: list[FileMetadata] = []
+    removed: list[FileMetadata] = []
 
 
 # ======================================================================================================================
@@ -47,4 +45,4 @@ class TransactionStatus(BaseModel):
 class Manifest(BaseModel):
     seq: int  # monotonically increasing version number for this snapshot of the lake, incremented on every change
     created_at: str | None  # None only for the zero-files, never-committed-to state a fresh lake starts in
-    files: list[FileMeta]
+    files: list[FileMetadata]

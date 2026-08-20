@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 
 import conftest
-from lakesync import types
-from lakesync.client import lakesync_client
-from lakesync.server import repository
+from bearpond import types
+from bearpond.client import bearpond_client
+from bearpond.server import repository
 
 PATH_A = "year=2024/month=01/a.parquet"
 PATH_B = "year=2024/month=02/b.parquet"
@@ -28,32 +28,32 @@ def source_dir(tmp_path: Path) -> Path:
 
 # ======================================================================================================================
 @pytest.fixture
-def client(live_server: str) -> Iterator[lakesync_client.LakesyncClient]:
-    with lakesync_client.LakesyncClient(live_server) as active_client:
+def client(live_server: str) -> Iterator[bearpond_client.BearpondClient]:
+    with bearpond_client.BearpondClient(live_server) as active_client:
         yield active_client
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def commit_source_dir(client: lakesync_client.LakesyncClient, source_dir: Path) -> types.CommitResponse:
+def commit_source_dir(client: bearpond_client.BearpondClient, source_dir: Path) -> types.CommitResponse:
     # drives the full client-side write lifecycle — the same begin -> upload -> commit sequence cli.cmd_upload uses
     files: dict[str, Path] = {
         path.relative_to(source_dir).as_posix(): path for path in sorted(source_dir.rglob("*.parquet"))
     }
-    declared: list[types.FileMeta] = client.declare_files(files)
+    declared: list[types.FileMetadata] = client.declare_files(files)
     txn_id: str = client.begin_transaction(declared)
     client.upload_files(txn_id, files)
     return client.commit(txn_id)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_get_manifest_on_empty_lake(client: lakesync_client.LakesyncClient) -> None:
+def test_get_manifest_on_empty_lake(client: bearpond_client.BearpondClient) -> None:
     manifest: types.Manifest = client.get_manifest()
     assert manifest.seq == 0
     assert manifest.files == []
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_upload_flow_commits_and_is_visible_in_manifest(client: lakesync_client.LakesyncClient, source_dir: Path) -> None:
+def test_upload_flow_commits_and_is_visible_in_manifest(client: bearpond_client.BearpondClient, source_dir: Path) -> None:
     result: types.CommitResponse = commit_source_dir(client, source_dir)
     assert result.seq == 1
     assert result.files_added_count == 2
@@ -63,7 +63,7 @@ def test_upload_flow_commits_and_is_visible_in_manifest(client: lakesync_client.
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_sync_downloads_everything_and_records_state(client: lakesync_client.LakesyncClient, source_dir: Path, tmp_path: Path) -> None:
+def test_sync_downloads_everything_and_records_state(client: bearpond_client.BearpondClient, source_dir: Path, tmp_path: Path) -> None:
     commit_source_dir(client, source_dir)
 
     target: Path = tmp_path / "mirror"
@@ -71,14 +71,14 @@ def test_sync_downloads_everything_and_records_state(client: lakesync_client.Lak
 
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert (target / PATH_B).read_bytes() == CONTENT_B
-    state: dict[str, lakesync_client.SyncedFileState] = lakesync_client.load_local_state(target)
+    state: dict[str, bearpond_client.SyncedFileState] = bearpond_client.load_local_state(target)
     assert sorted(state) == [PATH_A, PATH_B]
     assert state[PATH_A].sha256 == conftest.sha256_hex(CONTENT_A)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_second_sync_refetches_nothing(
-    client: lakesync_client.LakesyncClient,
+    client: bearpond_client.BearpondClient,
     source_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -100,13 +100,13 @@ def test_second_sync_refetches_nothing(
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_sync_prunes_removed_files_and_empty_dirs(client: lakesync_client.LakesyncClient, source_dir: Path, tmp_path: Path) -> None:
+def test_sync_prunes_removed_files_and_empty_dirs(client: bearpond_client.BearpondClient, source_dir: Path, tmp_path: Path) -> None:
     commit_source_dir(client, source_dir)
     target: Path = tmp_path / "mirror"
     client.sync(target)
 
     # a second transaction removes PATH_A from the lake, against the exact content the client observed
-    removed_meta: types.FileMeta = conftest.file_meta(PATH_A, CONTENT_A)
+    removed_meta: types.FileMetadata = conftest.file_meta(PATH_A, CONTENT_A)
     txn_id: str = client.begin_transaction([], removed=[removed_meta])
     client.commit(txn_id)
 
@@ -118,30 +118,30 @@ def test_sync_prunes_removed_files_and_empty_dirs(client: lakesync_client.Lakesy
     assert not (target / "year=2024/month=01").exists()
     assert (target / "year=2024/month=02").is_dir()
 
-    state: dict[str, lakesync_client.SyncedFileState] = lakesync_client.load_local_state(target)
+    state: dict[str, bearpond_client.SyncedFileState] = bearpond_client.load_local_state(target)
     assert sorted(state) == [PATH_B]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_sync_fails_on_checksum_mismatch(
-    client: lakesync_client.LakesyncClient,
+    client: bearpond_client.BearpondClient,
     source_dir: Path,
     tmp_path: Path,
-    repo_root: Path,
+    repo: repository.Repository,
 ) -> None:
     commit_source_dir(client, source_dir)
 
-    # the file on the server no longer matches what the manifest says it should be
-    conftest.write_lake_file(repo_root, PATH_A, b"corrupted after the fact")
+    # the object on the server no longer matches what the manifest says it should be
+    conftest.object_path(repo, CONTENT_A).write_bytes(b"corrupted after the fct")
 
-    with pytest.raises(lakesync_client.LakesyncError, match="checksum mismatch"):
+    with pytest.raises(bearpond_client.BearpondError, match="checksum mismatch"):
         client.sync(tmp_path / "mirror")
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_get_transaction_status(client: lakesync_client.LakesyncClient, source_dir: Path) -> None:
+def test_get_transaction_status(client: bearpond_client.BearpondClient, source_dir: Path) -> None:
     files: dict[str, Path] = {PATH_A: source_dir / PATH_A}
-    declared: list[types.FileMeta] = client.declare_files(files)
+    declared: list[types.FileMetadata] = client.declare_files(files)
     txn_id: str = client.begin_transaction(declared)
     assert client.get_transaction_status(txn_id).status == "open"
 
@@ -154,15 +154,15 @@ def test_get_transaction_status(client: lakesync_client.LakesyncClient, source_d
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_get_manifest_fails_loudly_on_corrupt_lake(
-    client: lakesync_client.LakesyncClient,
+def test_get_manifest_survives_deleted_exports(
+    client: bearpond_client.BearpondClient,
     source_dir: Path,
     repo: repository.Repository,
 ) -> None:
-    # regression guard: a corrupt manifests/ dir must raise, never look like an empty lake a sync would prune against
+    # the store is the source of truth — the exported manifest files can vanish without affecting readers
     commit_source_dir(client, source_dir)
-    manifest_name: str = repo.latest_pointer.read_text().strip()
-    (repo.manifest_root / manifest_name).unlink()
+    (repo.manifest_root / "manifest-00000001.json").unlink()
+    repo.latest_pointer.unlink()
 
-    with pytest.raises(lakesync_client.LakesyncError, match="500"):
-        client.get_manifest()
+    manifest: types.Manifest = client.get_manifest()
+    assert sorted(f.path for f in manifest.files) == [PATH_A, PATH_B]

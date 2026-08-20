@@ -1,13 +1,14 @@
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 import conftest
-from lakesync import types
-from lakesync.server import paths
-from lakesync.server import repository
-from lakesync.server import transaction
+from bearpond import types
+from bearpond.server import utils
+from bearpond.server import repository
+from bearpond.server import transaction
 
 HIVE_PATH = "year=2024/month=01/part.parquet"
 CONTENT = b"fake parquet bytes"
@@ -15,27 +16,26 @@ CONTENT = b"fake parquet bytes"
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_fsync_dir_flushes_a_directory(tmp_path: Path) -> None:
-    paths.fsync_dir(tmp_path)
+    utils.fsync_dir(tmp_path)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_atomic_write_produces_the_file(tmp_path: Path) -> None:
     target: Path = tmp_path / "state.json"
-    paths.atomic_write(target, b'{"a": 1}')
+    utils.atomic_write(target, b'{"a": 1}')
     assert target.read_bytes() == b'{"a": 1}'
     assert not (tmp_path / "state.json.tmp").exists()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_commit_fsyncs_in_write_ahead_order(repo: repository.Repository, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_commit_fsyncs_in_durability_order(repo: repository.Repository, monkeypatch: pytest.MonkeyPatch) -> None:
     # durability itself can't be tested without cutting power, but the discipline can: record every fsync, rename,
-    # and unlink during an upload + commit and assert the write-ahead ordering — an upload's content is flushed
-    # before it becomes staged, the journal is flushed before any move it describes, and the moves are flushed
-    # before the journal comes down
+    # and unlink during an upload + commit and assert the ordering — an upload's content is flushed before it
+    # becomes staged, and an object's placement rename is flushed before the manifest export that publishes it
     events: list[tuple[str, str]] = []
-    real_fsync = os.fsync
-    real_replace = os.replace
-    real_unlink = os.unlink
+    real_fsync: Callable[[int], None] = os.fsync
+    real_replace: Callable[..., None] = os.replace
+    real_unlink: Callable[..., None] = os.unlink
 
     def recording_fsync(fd: int) -> None:
         events.append(("fsync", ""))
@@ -59,10 +59,10 @@ def test_commit_fsyncs_in_write_ahead_order(repo: repository.Repository, monkeyp
     conftest.upload_bytes(txn, HIVE_PATH, CONTENT)
     txn.commit()
 
-    # the exact destination strings the rename calls used (safe_join resolves paths, so compute expectations the same way)
-    staged_path: str = str(paths.safe_join(txn.txn_dir, HIVE_PATH))
-    final_path: str = str(paths.safe_join(repo.data_root, HIVE_PATH))
-    journal_path: str = str(repo.journal_path)
+    # the exact destination strings the rename calls used (safe_join resolves paths, so compute that one the same way)
+    staged_path: str = str(utils.safe_join(txn.txn_dir, HIVE_PATH))
+    object_path: str = str(repo.object_store.get_location_for_address(conftest.sha256_hex(CONTENT)))
+    manifest_path: str = str(repo.manifest_root / "manifest-00000001.json")
 
     def index_of(kind: str, target: str) -> int:
         return next(i for i, event in enumerate(events) if event == (kind, target))
@@ -71,11 +71,9 @@ def test_commit_fsyncs_in_write_ahead_order(repo: repository.Repository, monkeyp
         return any(event[0] == "fsync" for event in events[start:end])
 
     upload_rename: int = index_of("replace", staged_path)
-    journal_write: int = index_of("replace", journal_path)
-    first_move: int = index_of("replace", final_path)
-    journal_delete: int = index_of("unlink", journal_path)
+    object_rename: int = index_of("replace", object_path)
+    manifest_write: int = index_of("replace", manifest_path)
 
-    assert upload_rename < journal_write < first_move < journal_delete
+    assert upload_rename < object_rename < manifest_write
     assert fsynced_between(0, upload_rename)
-    assert fsynced_between(journal_write, first_move)
-    assert fsynced_between(first_move, journal_delete)
+    assert fsynced_between(object_rename, manifest_write)

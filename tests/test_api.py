@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 import conftest
-from lakesync.server import repository
+from bearpond.server import repository
 
 HIVE_PATH = "year=2024/month=01/part.parquet"
 CONTENT = b"fake parquet bytes"
@@ -75,14 +75,14 @@ def test_full_write_read_flow_over_http(api: httpx.Client) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_auth_is_open_when_no_token_configured(api: httpx.Client) -> None:
-    # the repo fixture deletes LAKESYNC_TOKEN, so every request passes unchecked
+    # the repo fixture deletes BEARPOND_TOKEN, so every request passes unchecked
     assert api.get("/manifest").status_code == 404
     assert api.post("/transactions", json={"added": [], "removed": []}).status_code == 400
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_auth_rejects_missing_and_wrong_tokens(api: httpx.Client, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LAKESYNC_TOKEN", "s3cret")
+    monkeypatch.setenv("BEARPOND_TOKEN", "s3cret")
 
     assert api.get("/manifest").status_code == 401
     assert api.get("/manifest", headers={"Authorization": "Bearer wrong"}).status_code == 401
@@ -125,12 +125,12 @@ def test_transaction_status_reports_open_committed_and_unknown(api: httpx.Client
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_dangling_manifest_pointer_is_500(api: httpx.Client, repo: repository.Repository) -> None:
-    # corruption must surface as a loud server error — a 404 here would read as "empty lake" to a sync client
+def test_manifest_is_served_from_the_store_not_the_exports(api: httpx.Client, repo: repository.Repository) -> None:
+    # the exported manifest files are an audit trail, not the source of truth — losing one changes nothing for readers
     commit_via_api(api, HIVE_PATH, CONTENT)
-    manifest_name: str = repo.latest_pointer.read_text().strip()
-    (repo.manifest_root / manifest_name).unlink()
+    (repo.manifest_root / "manifest-00000001.json").unlink()
+    repo.latest_pointer.unlink()
 
     response: httpx.Response = api.get("/manifest")
-    assert response.status_code == 500
-    assert "dangling" in response.json()["detail"]
+    assert response.status_code == 200
+    assert [f["path"] for f in response.json()["files"]] == [HIVE_PATH]

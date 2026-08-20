@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-CONFIG_DIR_ENV_VAR = "LAKESYNC_CONFIG_DIR"
+CONFIG_DIR_ENV_VAR = "BEARPOND_CONFIG_DIR"
 
 
 # ======================================================================================================================

@@ -1,0 +1,378 @@
+import hashlib
+import json
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Protocol
+
+from pydantic import BaseModel, TypeAdapter
+
+from .. import types
+
+# validates/serializes the added/removed FileMetadata lists stored as JSON text in the commits table
+_file_meta_list_adapter: TypeAdapter[list[types.FileMetadata]] = TypeAdapter(list[types.FileMetadata])
+
+
+# ======================================================================================================================
+class MetadataStoreError(Exception):
+    pass
+
+
+# ======================================================================================================================
+class MetadataConflictError(MetadataStoreError):
+    # a commit's declared changes no longer match the current mapping — another commit landed in the meantime
+    pass
+
+
+# ======================================================================================================================
+# one record per commit, kept forever — the full history of how the lake reached its current state. Lives in the
+# commits table and is also exported to manifests/commits/{txn_id}.json as part of the durable audit trail. The
+# full FileMetadata of every added/removed path is included (not just the paths) so the metadata store can be rebuilt
+# from these exports alone if the sqlite database is ever lost or corrupted.
+#
+# commit_id is the record's content address, git-style: a hash over the change, its position in history
+# (parent_commit_id + seq), when, by whom, and why — making every record self-certifying and the chain of
+# records tamper-evident. txn_id is NOT part of the hash: it's the ephemeral handle of the transaction attempt
+# the commit was made through, not part of what the commit certifies.
+class CommitRecord(BaseModel):
+    commit_id: str
+    parent_commit_id: str | None
+    txn_id: str
+    seq: int
+    committed_at: str
+    added: list[types.FileMetadata]
+    removed: list[types.FileMetadata]
+    user: str | None
+    reason: str | None
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def compute_commit_id(
+    parent_commit_id: str | None,
+    seq: int,
+    committed_at: str,
+    added: list[types.FileMetadata],
+    removed: list[types.FileMetadata],
+    user: str | None,
+    reason: str | None,
+) -> str:
+    # fixed field order and compact separators make the hash reproducible from the exported record alone
+    payload: dict = {
+        "parent_commit_id": parent_commit_id,
+        "seq": seq,
+        "committed_at": committed_at,
+        "added": [f.model_dump() for f in added],
+        "removed": [f.model_dump() for f in removed],
+        "user": user,
+        "reason": reason,
+    }
+    canonical: str = json.dumps(payload, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+# ======================================================================================================================
+class MetadataStore(Protocol):
+
+    # the lake's system of record: which content lives at which path, the full history of how it got there, and
+    # the manifest sequence. commit_changes is the commit point of a transaction — implementations must make it
+    # atomic (all checks and updates in one storage transaction) and idempotent by txn_id (a retry after a lost
+    # response returns the original record).
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_file_metadata(self, path: str) -> types.FileMetadata | None: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_current_file_metadata_list(self, prefix: str | None = None) -> list[types.FileMetadata]: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_current_seq(self) -> int: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_manifest(self, seq: int) -> types.Manifest | None: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def commit_changes(
+        self,
+        txn_id: str,
+        added: list[types.FileMetadata],
+        removed: list[types.FileMetadata],
+        user: str | None = None,
+        reason: str | None = None,
+    ) -> CommitRecord: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_record(self, txn_id: str) -> CommitRecord | None: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_record_list(self) -> list[CommitRecord]: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def close(self) -> None: ...
+
+
+# ======================================================================================================================
+class SqliteMetadataStore(MetadataStore):
+
+    # one table of record: every path ever added, with the txn/seq that added it and — once removed — the txn/seq
+    # that removed it. The lake's current state is simply the live rows (removed_seq IS NULL); there is no separate
+    # "current" table to drift out of sync with this one.
+    _SCHEMA = """
+    CREATE TABLE IF NOT EXISTS objects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        added_txn TEXT NOT NULL,
+        added_seq INTEGER NOT NULL,
+        removed_txn TEXT,
+        removed_seq INTEGER
+    );
+    -- at most one live row per path — the invariant a separate current table's primary key would otherwise enforce
+    CREATE UNIQUE INDEX IF NOT EXISTS objects_live_path ON objects(path) WHERE removed_seq IS NULL;
+    
+    CREATE TABLE IF NOT EXISTS commits (
+        commit_id TEXT NOT NULL UNIQUE,
+        parent_commit_id TEXT,
+        txn_id TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL,
+        committed_at TEXT NOT NULL,
+        added TEXT NOT NULL,
+        removed TEXT NOT NULL,
+        user TEXT,
+        reason TEXT
+    );
+    """
+
+    # ------------------------------------------------------------------------------------------------------------------
+    @staticmethod
+    def _row_to_commit_record(row: tuple) -> CommitRecord:
+        # row columns arrive in the same order the model declares them: commit_id, parent_commit_id, txn_id,
+        # seq, committed_at, added, removed, user, reason
+        return CommitRecord(
+            commit_id=row[0],
+            parent_commit_id=row[1],
+            txn_id=row[2],
+            seq=row[3],
+            committed_at=row[4],
+            added=_file_meta_list_adapter.validate_json(row[5]),
+            removed=_file_meta_list_adapter.validate_json(row[6]),
+            user=row[7],
+            reason=row[8],
+        )
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def __init__(self, db_path: Path) -> None:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        # create the connection. check_same_thread=False bc we will have different threads.
+        self._conn: sqlite3.Connection = sqlite3.connect(db_path, check_same_thread=False)
+        
+        # re-entrant, so methods can call each other (commit_changes → get_commit_record) without self-deadlock
+        self._lock: threading.RLock = threading.RLock()
+        
+        # we need to synchronize execution of the initial schema creation
+        with self._lock:
+            self._conn.executescript(self._SCHEMA)
+            self._conn.commit()
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_file_metadata(self, path: str) -> types.FileMetadata | None:
+        with self._lock:
+            row: tuple | None = self._conn.execute(
+                "SELECT size, sha256 FROM objects WHERE path = ? AND removed_seq IS NULL", (path,)
+            ).fetchone()
+        result: types.FileMetadata | None = None
+        if row is not None:
+            result = types.FileMetadata(path=path, size=row[0], sha256=row[1])
+        return result
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_current_file_metadata_list(self, prefix: str | None = None) -> list[types.FileMetadata]:
+        with self._lock:
+            rows: list[tuple]
+            if prefix is not None:
+                # GLOB rather than LIKE: LIKE is case-insensitive for ASCII in sqlite (wrong for paths), and a
+                # literal-prefix GLOB range-scans the objects_live_path index instead of scanning the table
+                rows = self._conn.execute(
+                    "SELECT path, size, sha256 FROM objects "
+                    "WHERE removed_seq IS NULL AND path GLOB ? ORDER BY path",
+                    (prefix + "*",),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT path, size, sha256 FROM objects WHERE removed_seq IS NULL ORDER BY path"
+                ).fetchall()
+        return [types.FileMetadata(path=row[0], size=row[1], sha256=row[2]) for row in rows]
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_current_seq(self) -> int:
+        with self._lock:
+            # COALESCE covers the empty commits table: an aggregate query always returns one row, MAX of zero rows
+            # is NULL, and 0 is the lake's "no commits yet" sentinel — the first commit gets seq 1
+            seq: int = self._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM commits").fetchone()[0]
+        return seq
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_manifest(self, seq: int) -> types.Manifest | None:
+        # the lake as of the given seq: everything added at or before it and not yet removed by then. Returns
+        # None for a seq with no commit record (0 — the never-committed state — or beyond the current seq).
+        with self._lock:
+            # every recorded commit advances the seq exactly once, so each seq has exactly one commit record
+            row: tuple | None = self._conn.execute(
+                "SELECT committed_at FROM commits WHERE seq = ?", (seq,)
+            ).fetchone()
+
+            # if there is a commit with the given seq
+            manifest: types.Manifest | None = None
+            if row is not None:
+                # select all the files that were added before or by seq and have been deleted (yet)
+                rows: list[tuple] = self._conn.execute(
+                    "SELECT path, size, sha256 FROM objects "
+                    "WHERE added_seq <= ? AND (removed_seq IS NULL OR removed_seq > ?) ORDER BY path",
+                    (seq, seq),
+                ).fetchall()
+                
+                # creat the Manifest with the selected FileMetadata
+                manifest = types.Manifest(
+                    seq=seq,
+                    created_at=row[0],
+                    files=[types.FileMetadata(path=r[0], size=r[1], sha256=r[2]) for r in rows],
+                )
+        return manifest
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_record(self, txn_id: str) -> CommitRecord | None:
+        with self._lock:
+            row: tuple | None = self._conn.execute(
+                "SELECT commit_id, parent_commit_id, txn_id, seq, committed_at, added, removed, user, reason "
+                "FROM commits WHERE txn_id = ?",
+                (txn_id,),
+            ).fetchone()
+        record: CommitRecord | None = None
+        if row is not None:
+            record = self._row_to_commit_record(row)
+        return record
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def commit_changes(
+        self,
+        txn_id: str,
+        added: list[types.FileMetadata],
+        removed: list[types.FileMetadata],
+        user: str | None = None,
+        reason: str | None = None,
+    ) -> CommitRecord:
+        record: CommitRecord
+        with self._lock:
+            # a commit that already recorded itself is a retry after a lost response — answer with the original record
+            existing: CommitRecord | None = self.get_commit_record(txn_id)
+            if existing is not None:
+                record = existing
+            else:
+                committed_at: str = datetime.now(timezone.utc).isoformat()
+                # BEGIN IMMEDIATE takes the write lock up front, so the checks below and the updates they guard are
+                # one atomic unit — a concurrent commit can't slip between check and act
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    current: dict[str, types.FileMetadata] = {
+                        row[0]: types.FileMetadata(path=row[0], size=row[1], sha256=row[2])
+                        for row in self._conn.execute(
+                            "SELECT path, size, sha256 FROM objects WHERE removed_seq IS NULL"
+                        ).fetchall()
+                    }
+
+                    # an added path must not be live at all — different content is a modification conflict, identical
+                    # content is a no-op, and both are rejected: every recorded commit changes the lake by construction
+                    for added_file in added:
+                        if added_file.path in current and current[added_file.path].sha256 != added_file.sha256:
+                            raise MetadataConflictError(
+                                f"{added_file.path} already exists in the lake with different content — "
+                                f"modifying an existing file is only allowed via compaction"
+                            )
+                        if added_file.path in current:
+                            raise MetadataConflictError(
+                                f"{added_file.path} already exists in the lake with identical content — "
+                                f"re-adding it is a no-op"
+                            )
+
+                    # a removal is only safe against the exact content the client observed when it decided to remove
+                    for removed_file in removed:
+                        if removed_file.path not in current:
+                            raise MetadataConflictError(f"path to remove no longer exists: {removed_file.path}")
+                        if current[removed_file.path].sha256 != removed_file.sha256:
+                            raise MetadataConflictError(
+                                f"{removed_file.path} has changed since it was declared for removal — "
+                                f"remove is only safe against the exact content that was observed"
+                            )
+
+                    # the checks above guarantee this commit changes the mapping, so the seq always advances
+                    seq: int = self._conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM commits").fetchone()[0]
+
+                    # the head of the chain becomes this commit's parent, binding it to the full history behind it
+                    parent_row: tuple | None = self._conn.execute(
+                        "SELECT commit_id FROM commits ORDER BY seq DESC LIMIT 1"
+                    ).fetchone()
+                    parent_commit_id: str | None = parent_row[0] if parent_row is not None else None
+                    commit_id: str = compute_commit_id(
+                        parent_commit_id, seq, committed_at, added, removed, user, reason
+                    )
+
+                    for added_file in added:
+                        self._conn.execute(
+                            "INSERT INTO objects (path, size, sha256, added_txn, added_seq) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (added_file.path, added_file.size, added_file.sha256, txn_id, seq),
+                        )
+                    for removed_file in removed:
+                        self._conn.execute(
+                            "UPDATE objects SET removed_txn = ?, removed_seq = ? "
+                            "WHERE path = ? AND removed_seq IS NULL",
+                            (txn_id, seq, removed_file.path),
+                        )
+                    self._conn.execute(
+                        "INSERT INTO commits "
+                        "(commit_id, parent_commit_id, txn_id, seq, committed_at, added, removed, user, reason) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            commit_id,
+                            parent_commit_id,
+                            txn_id,
+                            seq,
+                            committed_at,
+                            _file_meta_list_adapter.dump_json(added).decode(),
+                            _file_meta_list_adapter.dump_json(removed).decode(),
+                            user,
+                            reason,
+                        ),
+                    )
+                    self._conn.commit()
+                except Exception:
+                    self._conn.rollback()
+                    raise
+
+                record = CommitRecord(
+                    commit_id=commit_id,
+                    parent_commit_id=parent_commit_id,
+                    txn_id=txn_id,
+                    seq=seq,
+                    committed_at=committed_at,
+                    added=added,
+                    removed=removed,
+                    user=user,
+                    reason=reason,
+                )
+        return record
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_record_list(self) -> list[CommitRecord]:
+        with self._lock:
+            rows: list[tuple] = self._conn.execute(
+                "SELECT commit_id, parent_commit_id, txn_id, seq, committed_at, added, removed, user, reason "
+                "FROM commits ORDER BY seq, committed_at"
+            ).fetchall()
+        return [self._row_to_commit_record(row) for row in rows]
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()

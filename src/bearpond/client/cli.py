@@ -4,15 +4,15 @@ import sys
 from pathlib import Path
 
 from .. import types
-from . import lakesync_client
+from . import bearpond_client
 
-SERVER_ENV_VAR = "LAKESYNC_SERVER"
-TOKEN_ENV_VAR = "LAKESYNC_TOKEN"
+SERVER_ENV_VAR = "BEARPOND_SERVER"
+TOKEN_ENV_VAR = "BEARPOND_TOKEN"
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_sync(args: argparse.Namespace) -> None:
-    with lakesync_client.LakesyncClient(args.server, token=args.token) as active_client:
+    with bearpond_client.BearpondClient(args.server, token=args.token) as active_client:
         active_client.sync(args.target, dry_run=args.dry_run)
 
 
@@ -28,8 +28,8 @@ def cmd_upload(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print(f"Uploading {len(files)} file(s) from {local_root} as one transaction...")
-    with lakesync_client.LakesyncClient(args.server, token=args.token) as active_client:
-        declared: list[types.FileMeta] = active_client.declare_files(files)
+    with bearpond_client.BearpondClient(args.server, token=args.token) as active_client:
+        declared: list[types.FileMetadata] = active_client.declare_files(files)
         txn_id: str = active_client.begin_transaction(declared)
         result: types.CommitResponse
         try:
@@ -47,7 +47,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--server", default=os.environ.get(SERVER_ENV_VAR),
         required=SERVER_ENV_VAR not in os.environ,
-        help=f"Lakesync server base URL (default: ${SERVER_ENV_VAR})",
+        help=f"Bearpond server base URL (default: ${SERVER_ENV_VAR})",
     )
     parser.add_argument(
         "--token", default=os.environ.get(TOKEN_ENV_VAR),
@@ -57,7 +57,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def main() -> None:
-    parser: argparse.ArgumentParser = argparse.ArgumentParser(description="Lakesync client CLI")
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(description="Bearpond client CLI")
     subparsers: argparse._SubParsersAction = parser.add_subparsers(dest="command", required=True)
 
     sync_parser: argparse.ArgumentParser = subparsers.add_parser(
@@ -81,7 +81,7 @@ def main() -> None:
     args: argparse.Namespace = parser.parse_args()
     try:
         args.func(args)
-    except lakesync_client.LakesyncError as e:
+    except bearpond_client.BearpondError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
