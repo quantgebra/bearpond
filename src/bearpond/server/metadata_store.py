@@ -309,12 +309,12 @@ class SqliteMetadataStore(MetadataStore):
                     # an added path must not be live at all — different content is a modification conflict, identical
                     # content is a no-op, and both are rejected: every recorded commit changes the lake by construction
                     for added_file in added:
-                        if added_file.path in current and current[added_file.path].sha256 != added_file.sha256:
-                            raise MetadataConflictError(
-                                f"{added_file.path} already exists in the lake with different content — "
-                                f"modifying an existing file is only allowed via compaction"
-                            )
                         if added_file.path in current:
+                            if current[added_file.path].sha256 != added_file.sha256:
+                                raise MetadataConflictError(
+                                    f"{added_file.path} already exists in the lake with different content — "
+                                    f"modifying an existing file is only allowed via compaction"
+                                )
                             raise MetadataConflictError(
                                 f"{added_file.path} already exists in the lake with identical content — "
                                 f"re-adding it is a no-op"

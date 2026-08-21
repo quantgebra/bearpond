@@ -35,6 +35,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     status: bearpond_client.WorkspaceStatus = client.status()
 
     print(f"Workspace at manifest-{status.workspace_seq:08d}")
+    for path in status.pending:
+        print(f"  pending sync:  {path}")
     for path in status.staged_added:
         print(f"  staged add:    {path.path}")
     for path in status.staged_removed:

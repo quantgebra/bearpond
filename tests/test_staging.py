@@ -47,9 +47,10 @@ def test_stage_files_records_metadata(workdir: Path) -> None:
     staged: list[types.FileMetadata] = bearpond_client.BearpondClient(workdir).add([Path(HIVE_PATH)])
     assert [f.path for f in staged] == [HIVE_PATH]
 
-    manifest: types.TransactionManifest = bearpond_client.BearpondClient(workdir).staged_manifest()
-    assert [f.path for f in manifest.added] == [HIVE_PATH]
-    assert manifest.added[0].sha256 == conftest.sha256_hex(CONTENT)
+    # the status report shows the staged addition — the public view of the staging area
+    status: bearpond_client.WorkspaceStatus = bearpond_client.BearpondClient(workdir).status()
+    assert [f.path for f in status.staged_added] == [HIVE_PATH]
+    assert status.staged_added[0].sha256 == conftest.sha256_hex(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -141,6 +142,20 @@ def test_rm_unstages_a_pending_add(workdir: Path) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_rm_of_tracked_file_staged_for_readd_cancels_the_add(workdir: Path) -> None:
+    # a tracked file staged for re-add: rm must cancel the pending add AND stage the removal — never both,
+    # since the server rejects a manifest with the same path in added and removed
+    write_workspace_manifest(workdir, 3, {HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]})
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
+    workspace.add([Path(HIVE_PATH)])
+
+    manifest: types.TransactionManifest = workspace.rm([Path(HIVE_PATH)])
+
+    assert manifest.added == []
+    assert [f.path for f in manifest.removed] == [HIVE_PATH]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_rm_commit_removes_from_lake_and_workspace(workdir: Path, live_server: str, repo: repository.Repository) -> None:
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
     with server_client.ServerClient(live_server) as server:
@@ -156,33 +171,62 @@ def test_rm_commit_removes_from_lake_and_workspace(workdir: Path, live_server: s
     manifest: types.Manifest | None = conftest.current_manifest(repo)
     assert manifest is not None
     assert [f.path for f in manifest.files] == [OTHER_PATH]
-    assert sorted(workspace.workspace_files()) == [OTHER_PATH]
-    assert workspace.workspace_seq() == 2
+    assert sorted(workspace._tracked_files()) == [OTHER_PATH]
+    assert workspace.tracked_manifest().seq == 2
     assert not (workdir / HIVE_PATH).exists()
     assert not (workdir / "year=2024/month=01").exists()
     assert (workdir / OTHER_PATH).read_bytes() == OTHER_CONTENT
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_prune_empty_dirs_sweeps_empties_but_keeps_files_and_root(tmp_path: Path) -> None:
+def test_mutating_operations_refuse_a_workspace_with_interrupted_sync(workdir: Path) -> None:
+    # a dirty workspace (interrupted sync pending) only supports sync and status — add/rm/commit must refuse
+    (workdir / bearpond_client.PENDING_NAME).write_text(json.dumps({HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]}))
+
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
+    with pytest.raises(server_client.BearpondError, match="interrupted sync"):
+        workspace.add([Path(HIVE_PATH)])
+    with pytest.raises(server_client.BearpondError, match="interrupted sync"):
+        workspace.rm([Path(HIVE_PATH)])
+    with pytest.raises(server_client.BearpondError, match="interrupted sync"):
+        workspace.commit(None)  # the guard fires before the server is ever touched
+
+    # and status surfaces the pending state rather than hiding it — reported as pending, never as untracked
+    status: bearpond_client.WorkspaceStatus = workspace.status()
+    assert status.pending == [HIVE_PATH]
+    assert HIVE_PATH not in status.untracked
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_prune_empty_dirs_removes_empty_ancestors_but_keeps_files_and_root(tmp_path: Path) -> None:
     root: Path = tmp_path / "mirror"
     (root / "year=2024/month=01").mkdir(parents=True)
     (root / "year=2024/month=02").mkdir(parents=True)
     (root / "year=2024/month=02/part.parquet").write_bytes(b"data")
 
-    bearpond_client.prune_empty_dirs(root)
-
-    # empty partition dirs are gone; the file, its ancestors, and root itself survive
+    # the deleted file's emptied chain is pruned up to root; the sibling tree and root itself survive
+    bearpond_client.prune_empty_dirs(root, root / "year=2024/month=01/part.parquet")
     assert not (root / "year=2024/month=01").exists()
     assert (root / "year=2024/month=02/part.parquet").read_bytes() == b"data"
     assert root.is_dir()
 
-    # a completely empty tree prunes down to root — but never root itself
-    other: Path = tmp_path / "empty-mirror"
-    (other / "a=b/c=d").mkdir(parents=True)
-    bearpond_client.prune_empty_dirs(other)
-    assert other.is_dir()
-    assert list(other.iterdir()) == []
+    # a chain of nested empties prunes tip-to-root in one call, stopping at root
+    bearpond_client.prune_empty_dirs(root, root / "a=b/c=d/gone.parquet")
+    assert not (root / "a=b").exists()
+    assert root.is_dir()
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_prune_empty_dirs_is_a_noop_outside_root(tmp_path: Path) -> None:
+    # the confinement guarantee: a start outside root touches nothing, even empty directories
+    root: Path = tmp_path / "mirror"
+    root.mkdir()
+    outside: Path = tmp_path / "outside" / "deep"
+    outside.mkdir(parents=True)
+
+    bearpond_client.prune_empty_dirs(root, outside / "file.parquet")
+
+    assert outside.is_dir()
 
 
 # ----------------------------------------------------------------------------------------------------------------------

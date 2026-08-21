@@ -140,12 +140,12 @@ class Repository:
                 )
         for rel_path, meta in declared.items():
             existing: types.FileMetadata | None = self.metadata_store.get_file_metadata(rel_path)
-            if existing is not None and existing.sha256 != meta.sha256:
-                raise transaction.TransactionConflictError(
-                    f"{rel_path} already exists in the lake with different content — "
-                    f"modifying an existing file is only allowed via compaction"
-                )
             if existing is not None:
+                if existing.sha256 != meta.sha256:
+                    raise transaction.TransactionConflictError(
+                        f"{rel_path} already exists in the lake with different content — "
+                        f"modifying an existing file is only allowed via compaction"
+                    )
                 # re-adding identical content would change nothing — a no-op commit is a client bug, not a success
                 raise transaction.TransactionConflictError(
                     f"{rel_path} already exists in the lake with identical content — re-adding it is a no-op"

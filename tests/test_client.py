@@ -77,10 +77,10 @@ def test_sync_downloads_everything_and_records_state(
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert (target / PATH_B).read_bytes() == CONTENT_B
 
-    state: dict[str, bearpond_client.FileState] = workspace.workspace_files()
+    state: dict[str, bearpond_client.FileState] = workspace._tracked_files()
     assert sorted(state) == [PATH_A, PATH_B]
     assert state[PATH_A].sha256 == conftest.sha256_hex(CONTENT_A)
-    assert workspace.workspace_seq() == 1
+    assert workspace.tracked_manifest().seq == 1
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -129,9 +129,9 @@ def test_sync_prunes_removed_files_and_empty_dirs(
     assert not (target / "year=2024/month=01").exists()
     assert (target / "year=2024/month=02").is_dir()
 
-    state: dict[str, bearpond_client.FileState] = workspace.workspace_files()
+    state: dict[str, bearpond_client.FileState] = workspace._tracked_files()
     assert sorted(state) == [PATH_B]
-    assert workspace.workspace_seq() == 2
+    assert workspace.tracked_manifest().seq == 2
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -202,7 +202,7 @@ def test_commit_stores_the_pristine_manifest(client: server_client.ServerClient,
     raw: dict = json.loads((source_dir / bearpond_client.MANIFEST_NAME).read_text())
     assert raw["seq"] == result.seq == 1
     assert not (source_dir / bearpond_client.PENDING_NAME).exists()
-    assert workspace.workspace_seq() == 1
+    assert workspace.tracked_manifest().seq == 1
 
 
 # ----------------------------------------------------------------------------------------------------------------------

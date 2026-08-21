@@ -295,3 +295,61 @@ state: SyncedState = load_state()
 ```
 
 When you reach for the bare-declare-then-unpack pattern, treat it as a smell: the function should return a `NamedTuple` (rule 6 already calls for this on positional shapes), giving callers one annotated variable and attribute access (rule 14) instead.
+
+## 16. No compound `A and B` condition leading a branch chain
+
+When a branch chain's first condition is a conjunction (`if A and B:`), every later branch carries the rest of the truth table implicitly — the reader has to reconstruct which combinations of A and B each `elif`/`else` actually covers. Nest instead, so every branch carries exactly one condition:
+
+```python
+# Not this:
+if rel_path in staged_added and rel_path not in workspace_files:
+    del staged_added[rel_path]
+elif rel_path not in workspace_files:
+    raise BearpondError(f"not tracked: {rel_path}")
+else:
+    stage_removal(rel_path)
+
+# This:
+if rel_path not in workspace_files:
+    if rel_path in staged_added:
+        del staged_added[rel_path]
+    else:
+        raise BearpondError(f"not tracked: {rel_path}")
+else:
+    stage_removal(rel_path)
+```
+
+The same applies to sequential guard raises — `if A and B: raise X` followed by `if A: raise Y` is the same truth table in disguise; nest both raises under one `if A:`. A compound condition in a *single* if with no chain is fine: there it's one logical test, not a decision tree the reader has to unfold. Nested chains also surface truth-table rows the compound form hides — a case that "can't happen" often turns out to be a case nobody handled.
+
+## 17. No pass-through wrapper methods
+
+A method whose only job is to call another method with an identical signature is not an abstraction — it's maintenance debt: every signature change must be made twice, and the wrapper invites the two names to drift apart. If the wrapped method should be public, make it public; if it shouldn't, call the private one directly. One of the pair must go.
+
+```python
+# Not this:
+def _tracked_files(self) -> dict[str, FileState]: ...
+def tracked_files(self) -> dict[str, FileState]:
+    return self._tracked_files()
+
+# This:
+def tracked_files(self) -> dict[str, FileState]: ...
+```
+
+A method only earns a place on a class if it *adds* something — validation, error translation, coordination across collaborators. Forwarding unchanged is not adding something.
+
+## 18. Public methods are porcelain; keep machinery private
+
+A class's public methods should be the things you'd want a stranger to call: the operations the class exists for, plus read-only *reports* computed for consumers (e.g. `status()`). The data structures those operations and reports are built from — bookkeeping maps, raw state-file loads — are plumbing and stay private, even when a report doesn't literally duplicate them (a report may deliberately abstract over internal bookkeeping rather than expose it).
+
+```python
+# Not this: internals made public because one caller happened to want them
+def staged_manifest(self) -> types.TransactionManifest: ...
+def tracked_files(self) -> dict[str, FileState]: ...
+
+# This: the report is the public read; the pieces behind it are private
+def status(self) -> WorkspaceStatus: ...
+def _staged_manifest(self) -> types.TransactionManifest: ...
+def _tracked_files(self) -> dict[str, FileState]: ...
+```
+
+If a piece of internal state genuinely gains outside consumers, promote it then — but default to private. The report should be the only read most clients ever need.

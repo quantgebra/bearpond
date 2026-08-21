@@ -23,6 +23,7 @@ class FileState(NamedTuple):
 # everything the workspace knows about how it differs from the lake, from status()
 class WorkspaceStatus(BaseModel):
     workspace_seq: int
+    pending: list[str]
     staged_added: list[types.FileMetadata]
     staged_removed: list[types.FileMetadata]
     untracked: list[str]
@@ -31,22 +32,22 @@ class WorkspaceStatus(BaseModel):
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def prune_empty_dirs(root: Path) -> None:
-    # removes every empty directory under root, deepest first so parents become empty in turn. Deliberately a
-    # root-to-tip sweep: rglob can never escape root, and rmdir only ever removes empty directories — so unlike
-    # an upward walk from the deleted file, no bug in a caller can make this touch anything outside root.
-    if root.is_dir():
-        dirs: list[Path] = sorted(
-            (p for p in root.rglob("*") if p.is_dir() and not p.is_symlink()),
-            key=lambda p: len(p.parts),
-            reverse=True,
-        )
-        for directory in dirs:
-            try:
-                directory.rmdir()
-            except OSError:
-                # non-empty or otherwise unremovable — pruning is best-effort cleanup, leftovers are harmless
-                pass
+def prune_empty_dirs(root: Path, start: Path) -> None:
+    # prunes start's ancestor chain tip-to-root, stopping at the first non-empty directory and never at root
+    # itself. Confinement is by path check, not by traversal or exception: is_relative_to is the playing field,
+    # so a start outside root makes this a no-op — nothing outside root can ever be touched. No exceptions are
+    # used for control flow: emptiness is checked before every delete.
+    resolved_root: Path = root.resolve()
+    current: Path = start.resolve().parent
+    while current != resolved_root and current.is_relative_to(resolved_root):
+        if not current.is_dir():
+            # a missing directory satisfies the prune intent already — keep walking up
+            current = current.parent
+            continue
+        if any(current.iterdir()):
+            break
+        current.rmdir()
+        current = current.parent
 
 
 # ======================================================================================================================
@@ -72,7 +73,7 @@ class BearpondClient:
         os.replace(tmp_path, path)
 
     # ------------------------------------------------------------------------------------------------------------------
-    def _load_manifest(self) -> types.Manifest | None:
+    def tracked_manifest(self) -> types.Manifest | None:
         # the pristine copy of the server manifest this workspace claims to represent — None if never synced
         manifest: types.Manifest | None = None
         manifest_path: Path = self.workdir / MANIFEST_NAME
@@ -100,17 +101,17 @@ class BearpondClient:
         self._write_state_file(PENDING_NAME, json.dumps(raw, indent=2))
 
     # ------------------------------------------------------------------------------------------------------------------
-    def _workspace_files(self) -> dict[str, FileState]:
-        # the effective view: the manifest's files with the pending overlay applied
-        manifest: types.Manifest | None = self._load_manifest()
+    def _tracked_files(self) -> dict[str, FileState]:
+        # the files the workspace tracks per its manifest — no pending overlay: an interrupted sync's progress is
+        # transient download state, not tracked state, and only sync() merges it in (explicitly, for resume)
+        manifest: types.Manifest | None = self.tracked_manifest()
         files: dict[str, FileState] = (
             {f.path: FileState(size=f.size, sha256=f.sha256) for f in manifest.files} if manifest else {}
         )
-        files.update(self._load_pending())
         return files
 
     # ------------------------------------------------------------------------------------------------------------------
-    def _load_staged(self) -> types.TransactionManifest:
+    def _staged_manifest(self) -> types.TransactionManifest:
         # the client-side staging area (like git's index): what add() recorded, waiting for commit()
         staged_path: Path = self.workdir / STAGED_NAME
         manifest: types.TransactionManifest = types.TransactionManifest()
@@ -125,25 +126,26 @@ class BearpondClient:
     # --- read-only views ----------------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------
-    def workspace_seq(self) -> int:
-        manifest: types.Manifest | None = self._load_manifest()
-        return manifest.seq if manifest is not None else 0
-
-    # ------------------------------------------------------------------------------------------------------------------
-    def workspace_files(self) -> dict[str, FileState]:
-        return self._workspace_files()
-
-    # ------------------------------------------------------------------------------------------------------------------
-    def staged_manifest(self) -> types.TransactionManifest:
-        return self._load_staged()
+    def _require_no_pending_sync(self) -> None:
+        # a dirty workspace — one with an interrupted sync — only supports sync (to finish it) and status (to see
+        # it). Staging operations against an ambiguous base are refused, the same way git refuses to let you work
+        # on top of an unfinished merge without resolving or aborting it first.
+        pending: dict[str, FileState] = self._load_pending()
+        if pending:
+            raise server_client.BearpondError(
+                f"workspace has an interrupted sync ({len(pending)} file(s) pending) — "
+                f"run `bearpond sync` to finish it, or delete {PENDING_NAME} to abandon it"
+            )
 
     # ------------------------------------------------------------------------------------------------------------------
     def status(self) -> WorkspaceStatus:
-        manifest_for_seq: types.Manifest | None = self._load_manifest()
+        manifest_for_seq: types.Manifest | None = self.tracked_manifest()
         seq: int = manifest_for_seq.seq if manifest_for_seq is not None else 0
-        workspace_files: dict[str, FileState] = self._workspace_files()
-        staged: types.TransactionManifest = self._load_staged()
+        tracked: dict[str, FileState] = self._tracked_files()
+        staged: types.TransactionManifest = self._staged_manifest()
         staged_paths: set[str] = {f.path for f in staged.added} | {f.path for f in staged.removed}
+        # files reported via their own status fields — staged via staged_added/staged_removed, pending via pending
+        accounted: set[str] = staged_paths | set(self._load_pending())
 
         untracked: list[str] = []
         modified: list[str] = []
@@ -151,23 +153,24 @@ class BearpondClient:
         if self.workdir.exists():
             for path in sorted(self.workdir.rglob("*.parquet")):
                 rel_path: str = path.relative_to(self.workdir).as_posix()
-                if rel_path not in workspace_files and rel_path not in staged_paths:
-                    untracked.append(rel_path)
-                elif rel_path in workspace_files:
+                if rel_path in tracked:
                     # drift from what the workspace has recorded: size short-circuits, hash only when the size still matches
-                    recorded: FileState = workspace_files[rel_path]
+                    recorded: FileState = tracked[rel_path]
                     if path.stat().st_size != recorded.size:
                         modified.append(rel_path)
                     else:
                         sha256, _ = server_client.hash_and_size(path)
                         if sha256 != recorded.sha256:
                             modified.append(rel_path)
-        for rel_path in workspace_files:
-            if not (self.workdir / rel_path).is_file() and rel_path not in staged_paths:
+                elif rel_path not in accounted:
+                    untracked.append(rel_path)
+        for rel_path in tracked:
+            if not (self.workdir / rel_path).is_file() and rel_path not in accounted:
                 missing.append(rel_path)
 
         return WorkspaceStatus(
             workspace_seq=seq,
+            pending=sorted(self._load_pending()),
             staged_added=staged.added,
             staged_removed=staged.removed,
             untracked=untracked,
@@ -181,6 +184,7 @@ class BearpondClient:
     def add(self, targets: list[Path]) -> list[types.FileMetadata]:
         # stages each target for the next commit: directories expand to the .parquet files beneath them, and a
         # file's lake path is its location relative to the workspace root. Re-adding a path updates its entry.
+        self._require_no_pending_sync()
         resolved: list[Path] = []
         for target in targets:
             # resolve up front so the relative_to() check below works whether targets are relative or absolute
@@ -192,7 +196,7 @@ class BearpondClient:
             else:
                 raise server_client.BearpondError(f"no such file or directory: {target}")
 
-        manifest: types.TransactionManifest = self._load_staged()
+        manifest: types.TransactionManifest = self._staged_manifest()
         staged: dict[str, types.FileMetadata] = {f.path: f for f in manifest.added}
 
         newly_staged: list[types.FileMetadata] = []
@@ -220,8 +224,9 @@ class BearpondClient:
         # exact content the workspace last observed — which is what the server's safe-removal check compares
         # against, so rm works offline and regardless of the file's current state on disk. Removing a path that
         # is staged for addition but not yet committed simply unstage it: there is nothing in the lake to remove.
-        workspace_files: dict[str, FileState] = self._workspace_files()
-        manifest: types.TransactionManifest = self._load_staged()
+        self._require_no_pending_sync()
+        tracked: dict[str, FileState] = self._tracked_files()
+        manifest: types.TransactionManifest = self._staged_manifest()
         staged_added: dict[str, types.FileMetadata] = {f.path: f for f in manifest.added}
         staged_removed: dict[str, types.FileMetadata] = {f.path: f for f in manifest.removed}
 
@@ -232,12 +237,16 @@ class BearpondClient:
             except ValueError:
                 raise server_client.BearpondError(f"path is outside the working directory: {target}")
 
-            if rel_path in staged_added and rel_path not in workspace_files:
-                del staged_added[rel_path]
-            elif rel_path not in workspace_files:
-                raise server_client.BearpondError(f"not tracked by the workspace: {rel_path}")
+            if rel_path not in tracked:
+                # nothing in the lake to remove — rm can only mean "cancel a pending add"
+                if rel_path in staged_added:
+                    del staged_added[rel_path]
+                else:
+                    raise server_client.BearpondError(f"not tracked by the workspace: {rel_path}")
             else:
-                observed: FileState = workspace_files[rel_path]
+                # a tracked path: stage the removal against the recorded content, cancelling any pending re-add
+                staged_added.pop(rel_path, None)
+                observed: FileState = tracked[rel_path]
                 staged_removed[rel_path] = types.FileMetadata(
                     path=rel_path, size=observed.size, sha256=observed.sha256
                 )
@@ -253,7 +262,8 @@ class BearpondClient:
     # ------------------------------------------------------------------------------------------------------------------
     def commit(self, server: server_client.ServerClient, message: str | None = None) -> types.CommitResponse:
         # the one short-lived server interaction: begin, upload everything staged, commit — all in one go
-        manifest: types.TransactionManifest = self._load_staged()
+        self._require_no_pending_sync()
+        manifest: types.TransactionManifest = self._staged_manifest()
         if not manifest.added and not manifest.removed:
             raise server_client.BearpondError("nothing staged to commit — stage files with `bearpond add` first")
 
@@ -290,9 +300,8 @@ class BearpondClient:
         for f in manifest.removed:
             doomed: Path = self.workdir / f.path
             doomed.unlink(missing_ok=True)
-        prune_empty_dirs(self.workdir)
+            prune_empty_dirs(self.workdir, doomed)
         self._save_manifest(new_manifest)
-        (self.workdir / PENDING_NAME).unlink(missing_ok=True)
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -308,8 +317,11 @@ class BearpondClient:
         
         # get the workspace manifes and the workspace files
         # the workspace files are the ones from the current manifest as well as from an interrupted sync
-        workspace_manifest: types.Manifest | None = self._load_manifest()
-        workspace_files: dict[str, FileState] = self._workspace_files()
+        workspace_manifest: types.Manifest | None = self.tracked_manifest()
+        # the resume view: tracked files plus whatever an interrupted sync already fetched — the one place
+        # pending merges into the file set, and it's explicit
+        workspace_files: dict[str, FileState] = self._tracked_files()
+        workspace_files.update(self._load_pending())
 
         # calculate file actions
         to_download: list = [p for p in manifest_files if workspace_files.get(p) != manifest_files[p]]
@@ -348,15 +360,12 @@ class BearpondClient:
                 self._save_pending(pending)
                 print(f"  fetched: {rel_path}")
 
-            # delete files
+            # delete files, pruning each deleted file's emptied ancestor directories as we go
             for rel_path in to_delete:
                 dest_path = self.workdir / rel_path
                 dest_path.unlink(missing_ok=True)
+                prune_empty_dirs(self.workdir, dest_path)
                 print(f"  pruned: {rel_path}")
-                
-            # need to prune empty directories if we deleted any files
-            if to_delete:
-                prune_empty_dirs(self.workdir)
 
             # we've updated to the new manifest, so let's make it official
             self._save_manifest(manifest)
