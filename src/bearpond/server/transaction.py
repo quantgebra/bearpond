@@ -174,7 +174,7 @@ class Transaction:
             # the commit point: one atomic metadata transaction flips every pointer — collision and removal
             # checks happen inside it, so check-and-act can never race. Idempotent by txn_uuid, so a client that
             # lost the response can safely retry.
-            record: metadata_store.CommitRecord = self.repo.record_commit(self.txn_uuid, declared, removed, reason=reason)
+            record: types.CommitRecord = self.repo.record_commit(self.txn_uuid, declared, removed, reason=reason)
 
             # the staging directory has served its purpose
             if self.txn_dir.exists():

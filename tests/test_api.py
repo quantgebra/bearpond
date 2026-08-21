@@ -114,7 +114,7 @@ def test_commit_records_the_reason(api: httpx.Client, repo: repository.Repositor
     response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit", json={"reason": "why we did it"})
     assert response.status_code == 200
 
-    record: metadata_store.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
+    record: types.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
     assert record is not None
     assert record.reason == "why we did it"
 
@@ -162,6 +162,22 @@ def test_repositories_are_isolated(api: httpx.Client) -> None:
     # the commit landed in the default repo only
     assert api.get(f"/repos/{conftest.REPO_NAME}/manifest").status_code == 200
     assert api.get("/repos/other/manifest").status_code == 404
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_commit_history_endpoint(api: httpx.Client) -> None:
+    commit_via_api(api, HIVE_PATH, CONTENT)
+    commit_via_api(api, "year=2024/month=03/extra.parquet", b"extra")
+
+    response: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/commits", params={"limit": 1})
+    assert response.status_code == 200
+    page: dict = response.json()
+    assert [r["seq"] for r in page["records"]] == [2]
+    assert page["next_cursor"] == 2
+
+    rest: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/commits", params={"before_seq": page["next_cursor"]})
+    assert [r["seq"] for r in rest.json()["records"]] == [1]
+    assert rest.json()["next_cursor"] is None
 
 
 # ----------------------------------------------------------------------------------------------------------------------

@@ -38,7 +38,7 @@ def get_transaction_status(repo_name: str, txn_uuid: str) -> types.TransactionSt
     except transaction.TransactionNotFoundError:
         # no staging dir — the transaction either never existed (or was aborted), or already committed; the
         # commit record tells the two apart
-        record: metadata_store.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
+        record: types.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
         if record is None:
             raise
         result = types.TransactionStatus(txn_uuid=record.txn_uuid, status="committed", seq=record.seq)
@@ -56,7 +56,7 @@ def commit_transaction(repo_name: str, txn_uuid: str, payload: types.CommitReque
     except transaction.TransactionNotFoundError:
         # no staging dir, but a commit record exists — this is a retry of a commit that already finished (e.g. its
         # response was lost to a crash or timeout), so answer from the record instead of failing
-        record: metadata_store.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
+        record: types.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
         if record is None:
             raise
         result = types.CommitResponse(

@@ -89,12 +89,30 @@ def test_list_directory_paginates_files_by_cursor(repo: repository.Repository) -
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_get_commit_record_page_paginates_newest_first(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {PATH_A: CONTENT_A})
+    conftest.commit_files(repo, {PATH_B: CONTENT_B})
+    conftest.remove_files(repo, {PATH_A: CONTENT_A})
+    store: metadata_store.MetadataStore = repo.metadata_store
+
+    first: types.CommitHistoryPage = store.get_commit_record_page(limit=2)
+    assert [r.seq for r in first.records] == [3, 2]
+    assert first.next_cursor == 2
+
+    # the cursor picks up exactly where the last page stopped, and the chain links across the page boundary
+    second: types.CommitHistoryPage = store.get_commit_record_page(limit=2, before_seq=first.next_cursor)
+    assert [r.seq for r in second.records] == [1]
+    assert second.next_cursor is None
+    assert first.records[-1].parent_commit_hash == second.records[0].commit_hash
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_get_manifest_created_at_matches_its_commit(repo: repository.Repository) -> None:
     conftest.commit_files(repo, {PATH_A: CONTENT_A})
     conftest.commit_files(repo, {PATH_B: CONTENT_B})
 
     store: metadata_store.MetadataStore = repo.metadata_store
-    records: list[metadata_store.CommitRecord] = store.get_commit_record_list()
+    records: list[types.CommitRecord] = store.get_commit_record_list()
 
     first: types.Manifest | None = store.get_manifest(1)
     second: types.Manifest | None = store.get_manifest(2)
@@ -108,7 +126,7 @@ def test_commit_hashs_form_a_chain(repo: repository.Repository) -> None:
     conftest.commit_files(repo, {PATH_B: CONTENT_B})
     conftest.remove_files(repo, {PATH_A: CONTENT_A})
 
-    records: list[metadata_store.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
 
     # the first commit has no parent; every later one names its predecessor's id, like git
     assert records[0].parent_commit_hash is None
@@ -122,7 +140,7 @@ def test_commit_hash_is_self_certifying(repo: repository.Repository) -> None:
     # anyone holding a record can recompute its id and prove it hasn't been altered
     conftest.commit_files(repo, {PATH_A: CONTENT_A})
 
-    record: metadata_store.CommitRecord | None = repo.metadata_store.get_commit_record_list()[0]
+    record: types.CommitRecord | None = repo.metadata_store.get_commit_record_list()[0]
     recomputed: str = metadata_store.compute_commit_hash(
         record.parent_commit_hash,
         record.seq,

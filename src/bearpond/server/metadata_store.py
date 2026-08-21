@@ -25,28 +25,6 @@ class MetadataConflictError(MetadataStoreError):
     pass
 
 
-# ======================================================================================================================
-# one record per commit, kept forever — the full history of how the lake reached its current state. Lives in the
-# commits table and is also exported to manifests/commits/{txn_uuid}.json as part of the durable audit trail. The
-# full FileMetadata of every added/removed path is included (not just the paths) so the metadata store can be rebuilt
-# from these exports alone if the sqlite database is ever lost or corrupted.
-#
-# commit_hash is the record's content address, git-style: a hash over the change, its position in history
-# (parent_commit_hash + seq), when, by whom, and why — making every record self-certifying and the chain of
-# records tamper-evident. txn_uuid is NOT part of the hash: it's the ephemeral handle of the transaction attempt
-# the commit was made through, not part of what the commit certifies.
-class CommitRecord(BaseModel):
-    commit_hash: str
-    parent_commit_hash: str | None
-    txn_uuid: str
-    seq: int
-    committed_at: str
-    added: list[types.FileMetadata]
-    removed: list[types.FileMetadata]
-    user: str | None
-    reason: str | None
-
-
 # ----------------------------------------------------------------------------------------------------------------------
 def compute_commit_hash(
     parent_commit_hash: str | None,
@@ -110,13 +88,16 @@ class MetadataStore(Protocol):
         removed: list[types.FileMetadata],
         user: str | None = None,
         reason: str | None = None,
-    ) -> CommitRecord: ...
+    ) -> types.CommitRecord: ...
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record(self, txn_uuid: str) -> CommitRecord | None: ...
+    def get_commit_record(self, txn_uuid: str) -> types.CommitRecord | None: ...
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record_list(self) -> list[CommitRecord]: ...
+    def get_commit_record_list(self) -> list[types.CommitRecord]: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_record_page(self, limit: int, before_seq: int | None = None) -> types.CommitHistoryPage: ...
 
     # ------------------------------------------------------------------------------------------------------------------
     def close(self) -> None: ...
@@ -157,10 +138,10 @@ class SqliteMetadataStore(MetadataStore):
 
     # ------------------------------------------------------------------------------------------------------------------
     @staticmethod
-    def _row_to_commit_record(row: tuple) -> CommitRecord:
+    def _row_to_commit_record(row: tuple) -> types.CommitRecord:
         # row columns arrive in the same order the model declares them: commit_hash, parent_commit_hash, txn_uuid,
         # seq, committed_at, added, removed, user, reason
-        return CommitRecord(
+        return types.CommitRecord(
             commit_hash=row[0],
             parent_commit_hash=row[1],
             txn_uuid=row[2],
@@ -265,14 +246,14 @@ class SqliteMetadataStore(MetadataStore):
         return manifest
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record(self, txn_uuid: str) -> CommitRecord | None:
+    def get_commit_record(self, txn_uuid: str) -> types.CommitRecord | None:
         with self._lock:
             row: tuple | None = self._conn.execute(
                 "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason "
                 "FROM commits WHERE txn_uuid = ?",
                 (txn_uuid,),
             ).fetchone()
-        record: CommitRecord | None = None
+        record: types.CommitRecord | None = None
         if row is not None:
             record = self._row_to_commit_record(row)
         return record
@@ -285,11 +266,11 @@ class SqliteMetadataStore(MetadataStore):
         removed: list[types.FileMetadata],
         user: str | None = None,
         reason: str | None = None,
-    ) -> CommitRecord:
-        record: CommitRecord
+    ) -> types.CommitRecord:
+        record: types.CommitRecord
         with self._lock:
             # a commit that already recorded itself is a retry after a lost response — answer with the original record
-            existing: CommitRecord | None = self.get_commit_record(txn_uuid)
+            existing: types.CommitRecord | None = self.get_commit_record(txn_uuid)
             if existing is not None:
                 record = existing
             else:
@@ -375,7 +356,7 @@ class SqliteMetadataStore(MetadataStore):
                     self._conn.rollback()
                     raise
 
-                record = CommitRecord(
+                record = types.CommitRecord(
                     commit_hash=commit_hash,
                     parent_commit_hash=parent_commit_hash,
                     txn_uuid=txn_uuid,
@@ -389,13 +370,30 @@ class SqliteMetadataStore(MetadataStore):
         return record
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record_list(self) -> list[CommitRecord]:
+    def get_commit_record_list(self) -> list[types.CommitRecord]:
         with self._lock:
             rows: list[tuple] = self._conn.execute(
                 "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason "
                 "FROM commits ORDER BY seq, committed_at"
             ).fetchall()
         return [self._row_to_commit_record(row) for row in rows]
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_record_page(self, limit: int, before_seq: int | None = None) -> types.CommitHistoryPage:
+        # newest-first history, keyset-paginated by seq — one extra row beyond the limit marks truncation
+        with self._lock:
+            rows: list[tuple] = self._conn.execute(
+                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason "
+                "FROM commits WHERE (? IS NULL OR seq < ?) ORDER BY seq DESC LIMIT ?",
+                (before_seq, before_seq, limit + 1),
+            ).fetchall()
+
+        truncated: bool = len(rows) > limit
+        page_rows: list[tuple] = rows[:limit]
+        return types.CommitHistoryPage(
+            records=[self._row_to_commit_record(row) for row in page_rows],
+            next_cursor=page_rows[-1][3] if truncated and page_rows else None,
+        )
 
     # ------------------------------------------------------------------------------------------------------------------
     def close(self) -> None:

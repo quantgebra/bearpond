@@ -61,6 +61,7 @@ bearpond add ./out/year=2024            # a directory expands to the .parquet fi
 bearpond rm ./out/year=2024/month=01/part.parquet   # stage a removal (offline, like add)
 bearpond status                         # staged / untracked / modified / missing / pending
 bearpond commit -m "january trades"     # begin + upload + commit as one short transaction
+bearpond log --limit 10                 # commit history: hash, seq, author, message
 ```
 
 **Pull the latest:**
@@ -85,6 +86,7 @@ bearpond pull
 | `DELETE /repos/{repo}/transactions/{txn_uuid}` | abort |
 | `GET /repos/{repo}/transactions/{txn_uuid}` | transaction status (`open` / `committed`) |
 | `GET /repos/{repo}/manifest` | the current manifest (files, sizes, sha256, seq) |
+| `GET /repos/{repo}/commits` | commit history, newest first (`?limit=&before_seq=`) |
 | `GET /repos/{repo}/files/{path}` | download a file, or list a prefix (`?limit=&cursor=`) |
 
 Errors are JSON `{"detail": …}` with sensible statuses: 400 invalid, 401 unauthenticated, 404 unknown, 409 conflict with another writer.

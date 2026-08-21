@@ -92,6 +92,21 @@ def cmd_pull(args: argparse.Namespace) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def cmd_log(args: argparse.Namespace) -> None:
+    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
+    with client.connect(token=args.token) as server:
+        page: types.CommitHistoryPage = server.get_commit_history(limit=args.limit)
+    for record in page.records:
+        author: str = record.user or "-"
+        reason: str = record.reason or "(no message)"
+        print(f"commit {record.commit_hash[:12]}  manifest-{record.seq:08d}")
+        print(f"Author: {author}    Date: {record.committed_at}")
+        print(f"    {reason}")
+        print(f"    +{len(record.added)} -{len(record.removed)} file(s)")
+        print()
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def main() -> None:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(description="Bearpond client CLI")
     subparsers: argparse._SubParsersAction = parser.add_subparsers(dest="command", required=True)
@@ -141,6 +156,13 @@ def main() -> None:
     pull_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
     pull_parser.add_argument("--dry-run", action="store_true")
     pull_parser.set_defaults(func=cmd_pull)
+
+    log_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "log", help="Show the repository's commit history, newest first"
+    )
+    log_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
+    log_parser.add_argument("--limit", type=int, default=20, help="Maximum number of commits to show")
+    log_parser.set_defaults(func=cmd_log)
 
     args: argparse.Namespace = parser.parse_args()
     try:

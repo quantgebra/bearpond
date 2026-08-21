@@ -232,6 +232,35 @@ def test_cli_repo_create_then_clone(live_server: str, tmp_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_get_commit_history_and_cli_log(
+    client: server_client.ServerClient,
+    source_dir: Path,
+    live_server: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(source_dir)
+    workspace.add([source_dir / PATH_A])
+    workspace.commit(client, message="first trades")
+
+    page: types.CommitHistoryPage = client.get_commit_history(limit=5)
+    assert [r.seq for r in page.records] == [1]
+    assert page.records[0].reason == "first trades"
+    assert page.records[0].parent_commit_hash is None
+
+    # the CLI prints the git-style log from inside a workspace
+    workdir: Path = tmp_path / "ws"
+    conftest.write_workspace_config(workdir, live_server)
+    monkeypatch.chdir(workdir)
+    cli.cmd_log(argparse.Namespace(token=None, limit=5))
+    out: str = capsys.readouterr().out
+    assert "manifest-00000001" in out
+    assert "first trades" in out
+    assert "+1 -0 file(s)" in out
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_pull_stores_the_pristine_manifest(client: server_client.ServerClient, source_dir: Path, tmp_path: Path) -> None:
     commit_source_dir(client, source_dir)
     target: Path = tmp_path / "mirror"

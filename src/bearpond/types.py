@@ -73,6 +73,35 @@ class Manifest(BaseModel):
 
 
 # ======================================================================================================================
+# one record per commit, kept forever — the full history of how the lake reached its current state. The full
+# FileMetadata of every added/removed path is included (not just the paths) so a metadata store can be rebuilt
+# from these records alone if the database is ever lost or corrupted.
+#
+# commit_hash is the record's content address, git-style: a hash over the change, its position in history
+# (parent_commit_hash + seq), when, by whom, and why — making every record self-certifying and the chain of
+# records tamper-evident. txn_uuid is NOT part of the hash: it's the ephemeral handle of the transaction attempt
+# the commit was made through, not part of what the commit certifies.
+class CommitRecord(BaseModel):
+    commit_hash: str
+    parent_commit_hash: str | None
+    txn_uuid: str
+    seq: int
+    committed_at: str
+    added: list[FileMetadata]
+    removed: list[FileMetadata]
+    user: str | None
+    reason: str | None
+
+
+# ======================================================================================================================
+# one page of commit history, newest first. next_cursor is the seq to pass as before_seq for the next page —
+# set only when the page is truncated.
+class CommitHistoryPage(BaseModel):
+    records: list[CommitRecord]
+    next_cursor: int | None
+
+
+# ======================================================================================================================
 class CreateRepositoryRequest(BaseModel):
     name: str
 

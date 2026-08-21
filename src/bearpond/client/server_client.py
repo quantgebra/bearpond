@@ -138,6 +138,19 @@ class ServerClient:
         os.replace(tmp_path, dest_path)
         return checksum
 
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_history(self, limit: int = 20, before_seq: int | None = None) -> types.CommitHistoryPage:
+        # the repo's commit history, newest first — pass a page's next_cursor as before_seq for the next page
+        params: dict = {"limit": limit}
+        if before_seq is not None:
+            params["before_seq"] = before_seq
+        response: httpx.Response = self._client.get(
+            f"{self._base}/commits", params=params, headers=self._headers()
+        )
+        self._raise_for_status(response)
+        result: types.CommitHistoryPage = types.CommitHistoryPage.model_validate_json(response.text)
+        return result
+
     # --- transaction lifecycle --------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------

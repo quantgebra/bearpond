@@ -129,7 +129,7 @@ def test_commit_writes_manifest_and_record_exports(repo: repository.Repository) 
     assert manifest_path.is_file()
     assert repo.latest_pointer.read_text().strip() == "manifest-00000001.json"
 
-    records: list[metadata_store.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
     assert len(records) == 1
     assert (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").is_file()
 
@@ -137,7 +137,7 @@ def test_commit_writes_manifest_and_record_exports(repo: repository.Repository) 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_recover_reexports_deleted_exports(repo: repository.Repository) -> None:
     conftest.commit_files(repo, {HIVE_PATH: CONTENT})
-    records: list[metadata_store.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
 
     # a crash interrupted the export — the files are gone but the store knows the commit happened
     (repo.manifest_root / "manifest-00000001.json").unlink()

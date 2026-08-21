@@ -99,7 +99,7 @@ def test_cmd_commit_end_to_end(workdir: Path, live_server: str, repo: repository
     assert manifest is not None
     assert sorted(f.path for f in manifest.files) == [HIVE_PATH, OTHER_PATH]
 
-    records: list[metadata_store.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
     assert records[0].reason == "first commit"
 
 

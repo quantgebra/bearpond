@@ -11,7 +11,7 @@ from starlette.status import (
 )
 
 from .. import metadata_store, repository, transaction, utils
-from . import files, manifest, repos, transactions
+from . import commits, files, manifest, repos, transactions
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -26,6 +26,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app: FastAPI = FastAPI(lifespan=lifespan)
 app.include_router(repos.router)
+app.include_router(commits.router)
 app.include_router(transactions.router)
 app.include_router(manifest.router)
 app.include_router(files.router)

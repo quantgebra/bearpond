@@ -49,8 +49,8 @@ def test_record_commit_is_idempotent_by_txn_uuid(repo: repository.Repository) ->
     txn: transaction.Transaction = begin_uploaded_txn(repo, {HIVE_PATH: CONTENT})
     declared: dict[str, transaction.FileMeta] = txn.load_declared()
 
-    first: metadata_store.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {})
-    second: metadata_store.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {})
+    first: types.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {})
+    second: types.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {})
 
     assert second == first
     assert repo.metadata_store.get_current_seq() == 1
@@ -73,7 +73,7 @@ def test_startup_recovers_interrupted_exports(repo: repository.Repository) -> No
     # end to end: a server started over a lake whose export was interrupted re-creates the export through the app
     # lifespan, and a client connecting afterwards reads the manifest served from the store
     conftest.commit_files(repo, {HIVE_PATH: CONTENT, OTHER_PATH: OTHER_CONTENT})
-    records: list[metadata_store.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
 
     (repo.manifest_root / "manifest-00000001.json").unlink()
     repo.latest_pointer.unlink()

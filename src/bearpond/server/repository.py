@@ -47,7 +47,7 @@ class Repository:
         return self.manifest_root / self.COMMITS_DIR_NAME
 
     # ------------------------------------------------------------------------------------------------------------------
-    def _export_commit(self, record: metadata_store.CommitRecord) -> None:
+    def _export_commit(self, record: types.CommitRecord) -> None:
         # manifests and commit records on disk are the durable audit trail — and the rebuild source if the sqlite
         # store is ever lost. Exports are idempotent, so recover() can simply re-run them for every record.
         # export exactly the version this commit produced — under the commit lock that is the current seq, but
@@ -77,11 +77,11 @@ class Repository:
         removed: dict[str, transaction.FileMeta],
         user: str | None = None,
         reason: str | None = None,
-    ) -> metadata_store.CommitRecord:
+    ) -> types.CommitRecord:
         # the commit point: one atomic metadata transaction flips every pointer at once. The export afterwards can
         # only fail benignly — recover() re-exports anything missing at next startup.
         try:
-            record: metadata_store.CommitRecord = self.metadata_store.commit_changes(
+            record: types.CommitRecord = self.metadata_store.commit_changes(
                 txn_uuid,
                 added=[types.FileMetadata(path=p, size=m.size, sha256=m.sha256) for p, m in declared.items()],
                 removed=[types.FileMetadata(path=p, size=m.size, sha256=m.sha256) for p, m in removed.items()],
