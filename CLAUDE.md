@@ -353,3 +353,23 @@ def _tracked_files(self) -> dict[str, FileState]: ...
 ```
 
 If a piece of internal state genuinely gains outside consumers, promote it then — but default to private. The report should be the only read most clients ever need.
+
+## 19. Test the positive in an if/else
+
+`if not A: foo; else: bar` is `if A: bar; else: foo` — but the second form is dramatically more readable, because the affirmative case comes first and the reader doesn't carry a negation across the branch. When an if has an else, phrase the test positively:
+
+```python
+# Not this:
+if rel_path not in tracked:
+    raise BearpondError(f"not tracked: {rel_path}")
+else:
+    stage_removal(rel_path)
+
+# This:
+if rel_path in tracked:
+    stage_removal(rel_path)
+else:
+    raise BearpondError(f"not tracked: {rel_path}")
+```
+
+This is about if/else specifically: a guard clause with no else (`if not valid: raise`) is fine — there the negation *is* the exceptional case, and there's no branch for the reader to carry it across. `x is not None` also counts as positive phrasing (it tests "we have a value"), not a negative.

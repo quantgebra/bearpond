@@ -7,14 +7,40 @@ from .. import types
 from . import bearpond_client
 from . import server_client
 
-SERVER_ENV_VAR = "BEARPOND_SERVER"
 TOKEN_ENV_VAR = "BEARPOND_TOKEN"
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def split_repo_url(url: str) -> tuple[str, str]:
+    # "<server>/<repo>" — a trailing /repos/ prefix on the server part is accepted and normalized away
+    server, sep, repo = url.rstrip("/").rpartition("/")
+    if not sep or not repo or not server:
+        raise server_client.BearpondError(f"URL must look like <server>/<repo>: {url}")
+    if server.endswith("/repos"):
+        server = server[: -len("/repos")]
+    return server, repo
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def cmd_repo_create(args: argparse.Namespace) -> None:
+    server, repo = split_repo_url(args.url)
+    with server_client.ServerClient(server, repo, token=args.token) as client:
+        client.create_repository(repo)
+    print(f"Created repository: {args.url}")
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def cmd_clone(args: argparse.Namespace) -> None:
+    server, repo = split_repo_url(args.url)
+    target: Path = args.dir if args.dir is not None else Path(repo)
+    bearpond_client.BearpondClient.clone(server, repo, target, token=args.token)
+    print(f"Cloned {args.url} into {target}")
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_add(args: argparse.Namespace) -> None:
     # staging is purely local — no server contact until commit
-    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient(Path.cwd())
+    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
     staged: list[types.FileMetadata] = client.add(args.paths)
     for entry in staged:
         print(f"  staged: {entry.path}")
@@ -24,19 +50,19 @@ def cmd_add(args: argparse.Namespace) -> None:
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_rm(args: argparse.Namespace) -> None:
     # staging removals is purely local — no server contact until commit
-    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient(Path.cwd())
+    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
     manifest: types.TransactionManifest = client.rm(args.paths)
     print(f"Staged: +{len(manifest.added)} addition(s), -{len(manifest.removed)} removal(s)")
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_status(args: argparse.Namespace) -> None:
-    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient(Path.cwd())
+    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
     status: bearpond_client.WorkspaceStatus = client.status()
 
     print(f"Workspace at manifest-{status.workspace_seq:08d}")
     for path in status.pending:
-        print(f"  pending sync:  {path}")
+        print(f"  pending pull:  {path}")
     for path in status.staged_added:
         print(f"  staged add:    {path.path}")
     for path in status.staged_removed:
@@ -52,36 +78,38 @@ def cmd_status(args: argparse.Namespace) -> None:
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_commit(args: argparse.Namespace) -> None:
     # the one short-lived server interaction: begin, upload everything staged, commit — all in one go
-    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient(Path.cwd())
-    with server_client.ServerClient(args.server, token=args.token) as server:
+    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
+    with client.connect(token=args.token) as server:
         result: types.CommitResponse = client.commit(server, message=args.message)
     print(f"Committed: manifest-{result.seq:08d}, +{result.files_added_count} -{result.files_removed_count} file(s)")
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def cmd_sync(args: argparse.Namespace) -> None:
-    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient(args.target)
-    with server_client.ServerClient(args.server, token=args.token) as server:
-        client.sync(server, dry_run=args.dry_run)
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--server", default=os.environ.get(SERVER_ENV_VAR),
-        required=SERVER_ENV_VAR not in os.environ,
-        help=f"Bearpond server base URL (default: ${SERVER_ENV_VAR})",
-    )
-    parser.add_argument(
-        "--token", default=os.environ.get(TOKEN_ENV_VAR),
-        help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})",
-    )
+def cmd_pull(args: argparse.Namespace) -> None:
+    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
+    with client.connect(token=args.token) as server:
+        client.pull(server, dry_run=args.dry_run)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def main() -> None:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(description="Bearpond client CLI")
     subparsers: argparse._SubParsersAction = parser.add_subparsers(dest="command", required=True)
+
+    repo_create_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "repo-create", help="Create a new repository on the server: <server>/<repo>"
+    )
+    repo_create_parser.add_argument("url", help="<server-url>/<repo-name>, e.g. http://localhost:8000/trades")
+    repo_create_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
+    repo_create_parser.set_defaults(func=cmd_repo_create)
+
+    clone_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "clone", help="Clone a repository into a new workspace: <server>/<repo> [dir]"
+    )
+    clone_parser.add_argument("url", help="<server-url>/<repo-name>, e.g. http://localhost:8000/trades")
+    clone_parser.add_argument("dir", type=Path, nargs="?", default=None, help="Target directory (default: the repo name)")
+    clone_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
+    clone_parser.set_defaults(func=cmd_clone)
 
     add_parser: argparse.ArgumentParser = subparsers.add_parser(
         "add", help="Stage files (or directories of .parquet files) for the next commit — purely local"
@@ -103,17 +131,16 @@ def main() -> None:
     commit_parser: argparse.ArgumentParser = subparsers.add_parser(
         "commit", help="Upload everything staged and commit it to the lake as one transaction"
     )
-    add_common_args(commit_parser)
+    commit_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
     commit_parser.add_argument("-m", "--message", default=None, help="Commit message recorded on the commit record")
     commit_parser.set_defaults(func=cmd_commit)
 
-    sync_parser: argparse.ArgumentParser = subparsers.add_parser(
-        "sync", help="Sync a local mirror against the server's latest manifest"
+    pull_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "pull", help="Pull the latest manifest from the server, updating the local mirror"
     )
-    add_common_args(sync_parser)
-    sync_parser.add_argument("--target", type=Path, required=True, help="Local directory to sync into")
-    sync_parser.add_argument("--dry-run", action="store_true")
-    sync_parser.set_defaults(func=cmd_sync)
+    pull_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
+    pull_parser.add_argument("--dry-run", action="store_true")
+    pull_parser.set_defaults(func=cmd_pull)
 
     args: argparse.Namespace = parser.parse_args()
     try:

@@ -68,9 +68,10 @@ class ServerClient:
         return declared
 
     # ------------------------------------------------------------------------------------------------------------------
-    def __init__(self, base_url: str, token: str | None = None, transport: httpx.BaseTransport | None = None) -> None:
+    def __init__(self, base_url: str, repo: str, token: str | None = None, transport: httpx.BaseTransport | None = None) -> None:
         # transport is injectable so tests (or exotic deployments, e.g. unix sockets) can swap how requests are carried
         self.token: str | None = token
+        self._base: str = f"/repos/{repo}"
         self._client: httpx.Client = httpx.Client(base_url=base_url.rstrip("/"), timeout=30.0, transport=transport)
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -89,11 +90,27 @@ class ServerClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
+    # --- repository management ---------------------------------------------------------------------------------------
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def list_repositories(self) -> list[str]:
+        response: httpx.Response = self._client.get("/repos", headers=self._headers())
+        self._raise_for_status(response)
+        return [entry["name"] for entry in response.json()]
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def create_repository(self, name: str) -> types.RepositoryInfo:
+        body: types.CreateRepositoryRequest = types.CreateRepositoryRequest(name=name)
+        response: httpx.Response = self._client.post("/repos", json=body.model_dump(), headers=self._headers())
+        self._raise_for_status(response)
+        result: types.RepositoryInfo = types.RepositoryInfo.model_validate_json(response.text)
+        return result
+
     # --- reads -----------------------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_manifest(self) -> types.Manifest:
-        response: httpx.Response = self._client.get("/manifest", headers=self._headers())
+        response: httpx.Response = self._client.get(f"{self._base}/manifest", headers=self._headers())
 
         manifest: types.Manifest
         if response.status_code == 404:
@@ -111,7 +128,7 @@ class ServerClient:
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path: Path = dest_path.with_suffix(dest_path.suffix + ".tmp")
         digest: hashlib._Hash = hashlib.sha256()
-        with self._client.stream("GET", f"/files/{rel_path}", headers=self._headers()) as response:
+        with self._client.stream("GET", f"{self._base}/files/{rel_path}", headers=self._headers()) as response:
             self._raise_for_status(response)
             with tmp_path.open("wb") as f:
                 for chunk in response.iter_bytes(chunk_size=CHUNK_SIZE):
@@ -126,7 +143,7 @@ class ServerClient:
     # ------------------------------------------------------------------------------------------------------------------
     def begin_transaction(self, added: list[types.FileMetadata], removed: list[types.FileMetadata] | None = None) -> str:
         body: types.TransactionManifest = types.TransactionManifest(added=added, removed=removed or [])
-        response: httpx.Response = self._client.post("/transactions", json=body.model_dump(), headers=self._headers())
+        response: httpx.Response = self._client.post(f"{self._base}/transactions", json=body.model_dump(), headers=self._headers())
         self._raise_for_status(response)
         result: types.BeginTransactionResponse = types.BeginTransactionResponse.model_validate_json(
             response.text
@@ -136,7 +153,7 @@ class ServerClient:
     # ------------------------------------------------------------------------------------------------------------------
     def upload_file(self, txn_uuid: str, rel_path: str, local_path: Path) -> types.FileMetadata:
         response: httpx.Response = self._client.put(
-            f"/transactions/{txn_uuid}/files/{rel_path}", content=iter_file_chunks(local_path), headers=self._headers()
+            f"{self._base}/transactions/{txn_uuid}/files/{rel_path}", content=iter_file_chunks(local_path), headers=self._headers()
         )
         self._raise_for_status(response)
         result: types.FileMetadata = types.FileMetadata.model_validate_json(response.text)
@@ -155,7 +172,7 @@ class ServerClient:
     def commit(self, txn_uuid: str, reason: str | None = None) -> types.CommitResponse:
         body: types.CommitRequest = types.CommitRequest(reason=reason)
         response: httpx.Response = self._client.post(
-            f"/transactions/{txn_uuid}/commit", json=body.model_dump(), headers=self._headers()
+            f"{self._base}/transactions/{txn_uuid}/commit", json=body.model_dump(), headers=self._headers()
         )
         self._raise_for_status(response)
         result: types.CommitResponse = types.CommitResponse.model_validate_json(response.text)
@@ -163,14 +180,14 @@ class ServerClient:
 
     # ------------------------------------------------------------------------------------------------------------------
     def abort(self, txn_uuid: str) -> None:
-        response: httpx.Response = self._client.delete(f"/transactions/{txn_uuid}", headers=self._headers())
+        response: httpx.Response = self._client.delete(f"{self._base}/transactions/{txn_uuid}", headers=self._headers())
         self._raise_for_status(response)
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_transaction_status(self, txn_uuid: str) -> types.TransactionStatus:
         # tells a caller whether a transaction is still open or already committed — the way to learn the outcome
         # of a commit whose response was lost (retrying commit() itself is also safe: it's idempotent)
-        response: httpx.Response = self._client.get(f"/transactions/{txn_uuid}", headers=self._headers())
+        response: httpx.Response = self._client.get(f"{self._base}/transactions/{txn_uuid}", headers=self._headers())
         self._raise_for_status(response)
         result: types.TransactionStatus = types.TransactionStatus.model_validate_json(response.text)
         return result

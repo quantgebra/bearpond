@@ -1,3 +1,4 @@
+import argparse
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -7,6 +8,7 @@ import pytest
 import conftest
 from bearpond import types
 from bearpond.client import bearpond_client
+from bearpond.client import cli
 from bearpond.client import server_client
 from bearpond.server import repository
 
@@ -31,7 +33,7 @@ def source_dir(tmp_path: Path) -> Path:
 # ======================================================================================================================
 @pytest.fixture
 def client(live_server: str) -> Iterator[server_client.ServerClient]:
-    with server_client.ServerClient(live_server) as active_client:
+    with server_client.ServerClient(live_server, conftest.REPO_NAME) as active_client:
         yield active_client
 
 
@@ -65,14 +67,14 @@ def test_upload_flow_commits_and_is_visible_in_manifest(client: server_client.Se
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_sync_downloads_everything_and_records_state(
+def test_pull_downloads_everything_and_records_state(
     client: server_client.ServerClient, source_dir: Path, tmp_path: Path
 ) -> None:
     commit_source_dir(client, source_dir)
 
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    workspace.sync(client)
+    workspace.pull(client)
 
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert (target / PATH_B).read_bytes() == CONTENT_B
@@ -93,7 +95,7 @@ def test_second_sync_refetches_nothing(
     commit_source_dir(client, source_dir)
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    workspace.sync(client)
+    workspace.pull(client)
 
     downloads: list[str] = []
     original = client.download_file
@@ -103,25 +105,25 @@ def test_second_sync_refetches_nothing(
         return original(rel_path, dest_path)
 
     monkeypatch.setattr(client, "download_file", counting_download)
-    workspace.sync(client)
+    workspace.pull(client)
     assert downloads == []
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_sync_prunes_removed_files_and_empty_dirs(
+def test_pull_prunes_removed_files_and_empty_dirs(
     client: server_client.ServerClient, source_dir: Path, tmp_path: Path
 ) -> None:
     commit_source_dir(client, source_dir)
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    workspace.sync(client)
+    workspace.pull(client)
 
     # a second transaction removes PATH_A from the lake, against the exact content the client observed
     removed_meta: types.FileMetadata = conftest.file_meta(PATH_A, CONTENT_A)
     txn_uuid: str = client.begin_transaction([], removed=[removed_meta])
     client.commit(txn_uuid)
 
-    workspace.sync(client)
+    workspace.pull(client)
 
     assert not (target / PATH_A).exists()
     assert (target / PATH_B).read_bytes() == CONTENT_B
@@ -135,7 +137,7 @@ def test_sync_prunes_removed_files_and_empty_dirs(
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_sync_fails_on_checksum_mismatch(
+def test_pull_fails_on_checksum_mismatch(
     client: server_client.ServerClient,
     source_dir: Path,
     tmp_path: Path,
@@ -148,7 +150,7 @@ def test_sync_fails_on_checksum_mismatch(
 
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(tmp_path / "mirror")
     with pytest.raises(server_client.BearpondError, match="checksum mismatch"):
-        workspace.sync(client)
+        workspace.pull(client)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -182,15 +184,63 @@ def test_get_manifest_survives_deleted_exports(
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_sync_stores_the_pristine_manifest(client: server_client.ServerClient, source_dir: Path, tmp_path: Path) -> None:
+def test_clone_creates_a_bound_workspace_with_files(
+    client: server_client.ServerClient, source_dir: Path, live_server: str, tmp_path: Path
+) -> None:
+    commit_source_dir(client, source_dir)
+
+    # clone is the only way a workspace comes into being: remote bound, first pull done
+    target: Path = tmp_path / "clone-of-testrepo"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient.clone(
+        live_server, conftest.REPO_NAME, target
+    )
+
+    assert (target / PATH_A).read_bytes() == CONTENT_A
+    assert (target / PATH_B).read_bytes() == CONTENT_B
+    manifest: types.Manifest | None = workspace.tracked_manifest()
+    assert manifest is not None and manifest.seq == 1
+    config: dict = json.loads((target / ".bearpond" / "config.json").read_text())
+    assert config == {"server": live_server, "repo": conftest.REPO_NAME}
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_clone_refuses_non_empty_target_and_cleans_up_on_failure(live_server: str, tmp_path: Path) -> None:
+    # a non-empty target is refused outright
+    target: Path = tmp_path / "occupied"
+    target.mkdir()
+    (target / "something.txt").write_text("x")
+    with pytest.raises(server_client.BearpondError, match="not empty"):
+        bearpond_client.BearpondClient.clone(live_server, conftest.REPO_NAME, target)
+
+    # cloning a repo that doesn't exist fails and leaves nothing behind
+    missing: Path = tmp_path / "ghost"
+    with pytest.raises(server_client.BearpondError):
+        bearpond_client.BearpondClient.clone(live_server, "no-such-repo", missing)
+    assert not missing.exists()
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_cli_repo_create_then_clone(live_server: str, tmp_path: Path) -> None:
+    # the full onboarding flow: create a repo on the server, then clone it into a workspace
+    cli.cmd_repo_create(argparse.Namespace(url=f"{live_server}/newrepo", token=None))
+
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient.clone(
+        live_server, "newrepo", tmp_path / "newrepo"
+    )
+    manifest: types.Manifest | None = workspace.tracked_manifest()
+    assert manifest is not None and manifest.seq == 0  # a fresh repo is an empty lake
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_pull_stores_the_pristine_manifest(client: server_client.ServerClient, source_dir: Path, tmp_path: Path) -> None:
     commit_source_dir(client, source_dir)
     target: Path = tmp_path / "mirror"
-    bearpond_client.BearpondClient(target).sync(client)
+    bearpond_client.BearpondClient(target).pull(client)
 
     # the manifest file holds exactly what the server served — field-for-field, not a re-derivation
-    raw: dict = json.loads((target / bearpond_client.MANIFEST_NAME).read_text())
+    raw: dict = json.loads((target / bearpond_client.STATE_DIR_NAME / bearpond_client.MANIFEST_NAME).read_text())
     assert raw == client.get_manifest().model_dump()
-    assert not (target / bearpond_client.PENDING_NAME).exists()
+    assert not (target / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).exists()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -199,14 +249,14 @@ def test_commit_stores_the_pristine_manifest(client: server_client.ServerClient,
     workspace.add([source_dir / PATH_A, source_dir / PATH_B])
     result: types.CommitResponse = workspace.commit(client, message="initial")
 
-    raw: dict = json.loads((source_dir / bearpond_client.MANIFEST_NAME).read_text())
+    raw: dict = json.loads((source_dir / bearpond_client.STATE_DIR_NAME / bearpond_client.MANIFEST_NAME).read_text())
     assert raw["seq"] == result.seq == 1
-    assert not (source_dir / bearpond_client.PENDING_NAME).exists()
+    assert not (source_dir / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).exists()
     assert workspace.tracked_manifest().seq == 1
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_sync_resumes_from_pending_after_interruption(
+def test_pull_resumes_from_pending_after_interruption(
     client: server_client.ServerClient,
     source_dir: Path,
     tmp_path: Path,
@@ -216,7 +266,7 @@ def test_sync_resumes_from_pending_after_interruption(
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
 
-    # a sync that dies after the first download: the completed file is recorded in the pending overlay
+    # a pull that dies after the first download: the completed file is recorded in the pending overlay
     original = client.download_file
     calls: list[str] = []
 
@@ -228,11 +278,11 @@ def test_sync_resumes_from_pending_after_interruption(
 
     monkeypatch.setattr(client, "download_file", fail_after_first)
     with pytest.raises(server_client.BearpondError, match="boom"):
-        workspace.sync(client)
+        workspace.pull(client)
 
-    # no manifest yet; the pending file marks the interrupted sync and records the completed download
-    assert not (target / bearpond_client.MANIFEST_NAME).exists()
-    pending: dict = json.loads((target / bearpond_client.PENDING_NAME).read_text())
+    # no manifest yet; the pending file marks the interrupted pull and records the completed download
+    assert not (target / bearpond_client.STATE_DIR_NAME / bearpond_client.MANIFEST_NAME).exists()
+    pending: dict = json.loads((target / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).read_text())
     assert list(pending) == [PATH_A]
 
     # the retry downloads only what the overlay doesn't already cover, then adopts the full manifest
@@ -242,10 +292,10 @@ def test_sync_resumes_from_pending_after_interruption(
 
     monkeypatch.setattr(client, "download_file", recording)
     calls.clear()
-    workspace.sync(client)
+    workspace.pull(client)
 
     assert calls == [PATH_B]
-    final: dict = json.loads((target / bearpond_client.MANIFEST_NAME).read_text())
+    final: dict = json.loads((target / bearpond_client.STATE_DIR_NAME / bearpond_client.MANIFEST_NAME).read_text())
     assert final["seq"] == 1
-    assert not (target / bearpond_client.PENDING_NAME).exists()
+    assert not (target / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).exists()
     assert (target / PATH_B).read_bytes() == CONTENT_B

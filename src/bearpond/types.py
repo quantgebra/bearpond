@@ -70,3 +70,13 @@ class Manifest(BaseModel):
     seq: int  # monotonically increasing version number for this snapshot of the lake, incremented on every change
     created_at: str | None  # None only for the zero-files, never-committed-to state a fresh lake starts in
     files: list[FileMetadata]
+
+
+# ======================================================================================================================
+class CreateRepositoryRequest(BaseModel):
+    name: str
+
+
+# ======================================================================================================================
+class RepositoryInfo(BaseModel):
+    name: str

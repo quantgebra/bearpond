@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import socket
 import threading
 import time
@@ -97,10 +98,22 @@ def running_server() -> Iterator[str]:
         thread.join(timeout=5)
 
 
+REPO_NAME = "testrepo"
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def write_workspace_config(workdir: Path, server: str, repo: str = REPO_NAME) -> None:
+    # a .bearpond/config.json as clone would have written it
+    config_dir: Path = workdir / ".bearpond"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.json").write_text(json.dumps({"server": server, "repo": repo}))
+
+
 # ======================================================================================================================
 @pytest.fixture
 def repo_root(tmp_path: Path) -> Path:
-    root: Path = tmp_path / "repo"
+    # the server's repos root — one subdirectory per repository
+    root: Path = tmp_path / "repos"
     root.mkdir(parents=True)
     return root
 
@@ -108,11 +121,11 @@ def repo_root(tmp_path: Path) -> Path:
 # ======================================================================================================================
 @pytest.fixture
 def repo(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[repository.Repository]:
-    # points the process-wide singleton at this test's fresh repo_root — the app resolves it per request, so
-    # reconfiguring here is enough for both domain-level and HTTP-level tests
+    # points the process-wide registry at this test's fresh repos root, with one repository created inside it —
+    # the app resolves repos per request, so reconfiguring here is enough for domain- and HTTP-level tests alike
     monkeypatch.delenv("BEARPOND_TOKEN", raising=False)
-    repository.configure(config.ServerConfig(repo_root=repo_root))
-    instance: repository.Repository = repository.get_repository()
+    repository.configure(config.ServerConfig(repos_root=repo_root))
+    instance: repository.Repository = repository.create_repository(REPO_NAME)
     yield instance
     instance.metadata_store.close()
 

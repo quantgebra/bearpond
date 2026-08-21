@@ -80,7 +80,7 @@ def test_startup_recovers_interrupted_exports(repo: repository.Repository) -> No
     (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").unlink()
 
     with conftest.running_server() as url:
-        with server_client.ServerClient(url) as client:
+        with server_client.ServerClient(url, conftest.REPO_NAME) as client:
             manifest: types.Manifest = client.get_manifest()
 
     assert sorted(f.path for f in manifest.files) == [HIVE_PATH, OTHER_PATH]

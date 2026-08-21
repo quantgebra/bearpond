@@ -19,14 +19,23 @@ OTHER_CONTENT = b"other parquet bytes"
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def write_workspace_manifest_file(workdir: Path, manifest: dict) -> None:
+    # a .bearpond/manifest.json holding the given manifest dump
+    state_dir: Path = workdir / bearpond_client.STATE_DIR_NAME
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / bearpond_client.MANIFEST_NAME).write_text(json.dumps(manifest))
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def write_workspace_manifest(workdir: Path, seq: int, files: dict[str, list]) -> None:
-    # a _manifest.json in the current format: the verbatim manifest dump
+    # a .bearpond/manifest.json in the current format: the verbatim manifest dump
     manifest: dict = {
         "seq": seq,
         "created_at": None,
         "files": [{"path": p, "size": v[0], "sha256": v[1]} for p, v in files.items()],
     }
-    (workdir / bearpond_client.MANIFEST_NAME).write_text(json.dumps(manifest))
+    write_workspace_manifest_file(workdir, manifest)
+    write_workspace_manifest_file(workdir, manifest)
 
 
 # ======================================================================================================================
@@ -79,11 +88,12 @@ def test_stage_files_rejects_bad_targets(workdir: Path, tmp_path: Path) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_cmd_commit_end_to_end(workdir: Path, live_server: str, repo: repository.Repository) -> None:
+    conftest.write_workspace_config(workdir, live_server)
     cli.cmd_add(argparse.Namespace(paths=[Path("year=2024")]))
-    cli.cmd_commit(argparse.Namespace(server=live_server, token=None, message="first commit"))
+    cli.cmd_commit(argparse.Namespace(token=None, message="first commit"))
 
     # the staging area is cleared, the lake has the files, and the commit message is on the record
-    assert not (workdir / bearpond_client.STAGED_NAME).exists()
+    assert not (workdir / bearpond_client.STATE_DIR_NAME / bearpond_client.STAGED_NAME).exists()
 
     manifest: types.Manifest | None = conftest.current_manifest(repo)
     assert manifest is not None
@@ -95,21 +105,23 @@ def test_cmd_commit_end_to_end(workdir: Path, live_server: str, repo: repository
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_cmd_commit_refuses_drifted_files(workdir: Path, live_server: str, repo: repository.Repository) -> None:
+    conftest.write_workspace_config(workdir, live_server)
     cli.cmd_add(argparse.Namespace(paths=[Path(HIVE_PATH)]))
     (workdir / HIVE_PATH).write_bytes(b"changed after staging")
 
     with pytest.raises(server_client.BearpondError, match="modified since staged"):
-        cli.cmd_commit(argparse.Namespace(server=live_server, token=None, message=None))
+        cli.cmd_commit(argparse.Namespace(token=None, message=None))
 
     # the staging area survives so the user can re-stage and retry, and nothing reached the server
-    assert (workdir / bearpond_client.STAGED_NAME).exists()
+    assert (workdir / bearpond_client.STATE_DIR_NAME / bearpond_client.STAGED_NAME).exists()
     assert conftest.current_manifest(repo) is None
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_cmd_commit_with_nothing_staged(workdir: Path, live_server: str) -> None:
+    conftest.write_workspace_config(workdir, live_server)
     with pytest.raises(server_client.BearpondError, match="nothing staged"):
-        cli.cmd_commit(argparse.Namespace(server=live_server, token=None, message=None))
+        cli.cmd_commit(argparse.Namespace(token=None, message=None))
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -158,7 +170,7 @@ def test_rm_of_tracked_file_staged_for_readd_cancels_the_add(workdir: Path) -> N
 # ----------------------------------------------------------------------------------------------------------------------
 def test_rm_commit_removes_from_lake_and_workspace(workdir: Path, live_server: str, repo: repository.Repository) -> None:
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
-    with server_client.ServerClient(live_server) as server:
+    with server_client.ServerClient(live_server, conftest.REPO_NAME) as server:
         workspace.add([Path("year=2024")])
         workspace.commit(server, message="add both")
 
@@ -180,15 +192,16 @@ def test_rm_commit_removes_from_lake_and_workspace(workdir: Path, live_server: s
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_mutating_operations_refuse_a_workspace_with_interrupted_sync(workdir: Path) -> None:
-    # a dirty workspace (interrupted sync pending) only supports sync and status — add/rm/commit must refuse
-    (workdir / bearpond_client.PENDING_NAME).write_text(json.dumps({HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]}))
+    # a dirty workspace (interrupted pull pending) only supports pull and status — add/rm/commit must refuse
+    (workdir / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).parent.mkdir(exist_ok=True)
+    (workdir / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).write_text(json.dumps({HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]}))
 
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
-    with pytest.raises(server_client.BearpondError, match="interrupted sync"):
+    with pytest.raises(server_client.BearpondError, match="interrupted pull"):
         workspace.add([Path(HIVE_PATH)])
-    with pytest.raises(server_client.BearpondError, match="interrupted sync"):
+    with pytest.raises(server_client.BearpondError, match="interrupted pull"):
         workspace.rm([Path(HIVE_PATH)])
-    with pytest.raises(server_client.BearpondError, match="interrupted sync"):
+    with pytest.raises(server_client.BearpondError, match="interrupted pull"):
         workspace.commit(None)  # the guard fires before the server is ever touched
 
     # and status surfaces the pending state rather than hiding it — reported as pending, never as untracked

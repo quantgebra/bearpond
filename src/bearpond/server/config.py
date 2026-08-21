@@ -10,7 +10,8 @@ CONFIG_DIR_ENV_VAR = "BEARPOND_CONFIG_DIR"
 # ======================================================================================================================
 @dataclass
 class ServerConfig:
-    repo_root: Path
+    # the directory that holds the server's repositories — one subdirectory per repo
+    repos_root: Path
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -26,13 +27,13 @@ def load_server_config(config_dir: Path) -> ServerConfig:
         raise FileNotFoundError(f"no server.yaml found in config dir: {config_dir}")
 
     raw: dict = yaml.safe_load(config_path.read_text()) or {}
-    if "repo_root" not in raw:
-        raise ValueError(f"server.yaml missing required key 'repo_root' ({config_path})")
+    if "repos_root" not in raw:
+        raise ValueError(f"server.yaml missing required key 'repos_root' ({config_path})")
 
-    # a relative repo_root is resolved against the config file's own directory, not the process's cwd — so the
+    # a relative repos_root is resolved against the config file's own directory, not the process's cwd — so the
     # same config works regardless of where the server happens to be launched from
-    repo_root: Path = Path(raw["repo_root"]).expanduser()
-    if not repo_root.is_absolute():
-        repo_root = (config_dir / repo_root).resolve()
+    repos_root: Path = Path(raw["repos_root"]).expanduser()
+    if not repos_root.is_absolute():
+        repos_root = (config_dir / repos_root).resolve()
 
-    return ServerConfig(repo_root=repo_root)
+    return ServerConfig(repos_root=repos_root)

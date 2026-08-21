@@ -1,3 +1,4 @@
+import re
 import uuid
 from pathlib import Path
 
@@ -29,16 +30,16 @@ class Repository:
             raise transaction.TransactionValidationError(str(e)) from e
 
     # ------------------------------------------------------------------------------------------------------------------
-    def __init__(self, server_config: config.ServerConfig, store: metadata_store.MetadataStore | None = None) -> None:
+    def __init__(self, repo_dir: Path, store: metadata_store.MetadataStore | None = None) -> None:
         # the repository's entire on-disk layout: content-addressed objects, in-flight uploads, exported manifests
-        self.objects_root: Path = server_config.repo_root / "objects"
-        self.staging_root: Path = server_config.repo_root / "staging"
-        self.manifest_root: Path = server_config.repo_root / "manifests"
+        self.objects_root: Path = repo_dir / "objects"
+        self.staging_root: Path = repo_dir / "staging"
+        self.manifest_root: Path = repo_dir / "manifests"
         self.latest_pointer: Path = self.manifest_root / "_latest"
         self.object_store: object_store.ObjectStore = object_store.ObjectStore(self.objects_root)
         # the metadata store is the system of record — injectable so tests (or future backends) can swap it
         self.metadata_store: metadata_store.MetadataStore = (
-            store if store is not None else metadata_store.SqliteMetadataStore(server_config.repo_root / "bearpond.sqlite")
+            store if store is not None else metadata_store.SqliteMetadataStore(repo_dir / "bearpond.sqlite")
         )
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -166,25 +167,79 @@ class Repository:
         return txn
 
 
-# the server process has exactly one repository, configured once at startup — everything else reaches it through
-# get_repository() rather than constructing or holding its own Repository instance
-_instance: Repository | None = None
+# ======================================================================================================================
+class RepositoryNotFoundError(RepositoryError):
+    pass
+
+
+# ======================================================================================================================
+class RepositoryExistsError(RepositoryError):
+    pass
+
+
+# ======================================================================================================================
+class InvalidRepositoryNameError(RepositoryError):
+    pass
+
+
+# a repo name must be a safe single path segment — it becomes a directory under repos_root and a URL component
+_REPO_NAME: re.Pattern = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+# the server's repositories, resolved lazily by name from the configured repos_root
+_repos_root: Path | None = None
+_repositories: dict[str, Repository] = {}
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def configure(server_config: config.ServerConfig) -> None:
-    global _instance
-    _instance = Repository(server_config)
+    global _repos_root
+    _repos_root = server_config.repos_root
+    _repositories.clear()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def get_repository() -> Repository:
-    if _instance is None:
+def _require_repos_root() -> Path:
+    if _repos_root is None:
         raise RuntimeError("bearpond server is not configured — set BEARPOND_CONFIG_DIR before startup")
-    return _instance
+    return _repos_root
 
 
-# auto-configure from BEARPOND_CONFIG_DIR so importing this module is enough to get a working singleton in the
+# ----------------------------------------------------------------------------------------------------------------------
+def get_repository(name: str) -> Repository:
+    repos_root: Path = _require_repos_root()
+    if name not in _repositories:
+        if not _REPO_NAME.match(name):
+            raise RepositoryNotFoundError(f"invalid repository name: {name}")
+        repo_dir: Path = repos_root / name
+        if not repo_dir.is_dir():
+            raise RepositoryNotFoundError(f"unknown repository: {name}")
+        _repositories[name] = Repository(repo_dir)
+    return _repositories[name]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def create_repository(name: str) -> Repository:
+    repos_root: Path = _require_repos_root()
+    if not _REPO_NAME.match(name):
+        raise InvalidRepositoryNameError(f"invalid repository name: {name}")
+    repo_dir: Path = repos_root / name
+    if repo_dir.exists():
+        raise RepositoryExistsError(f"repository already exists: {name}")
+    repo_dir.mkdir(parents=True)
+    _repositories[name] = Repository(repo_dir)
+    return _repositories[name]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def list_repositories() -> list[str]:
+    repos_root: Path = _require_repos_root()
+    repos: list[str] = []
+    if repos_root.is_dir():
+        repos = sorted(p.name for p in repos_root.iterdir() if p.is_dir())
+    return repos
+
+
+# auto-configure from BEARPOND_CONFIG_DIR so importing this module is enough to get a working registry in the
 # server process — tests call configure() directly instead and don't need the env var set
 _env_config_dir: Path | None = config.config_dir_from_env()
 if _env_config_dir is not None:

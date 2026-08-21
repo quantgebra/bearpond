@@ -6,13 +6,13 @@ from .. import repository
 from .. import transaction
 from . import dependencies
 
-router: APIRouter = APIRouter(prefix="/transactions", tags=["transactions"], dependencies=[Depends(dependencies.require_auth)])
+router: APIRouter = APIRouter(prefix="/repos/{repo_name}/transactions", tags=["transactions"], dependencies=[Depends(dependencies.require_auth)])
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.post("")
-def begin_transaction(manifest: types.TransactionManifest) -> types.BeginTransactionResponse:
-    txn: transaction.Transaction = repository.get_repository().begin_transaction(manifest)
+def begin_transaction(repo_name: str, manifest: types.TransactionManifest) -> types.BeginTransactionResponse:
+    txn: transaction.Transaction = repository.get_repository(repo_name).begin_transaction(manifest)
     return types.BeginTransactionResponse(
         txn_uuid=txn.txn_uuid,
         added_files=list(txn.load_declared().keys()),
@@ -22,15 +22,15 @@ def begin_transaction(manifest: types.TransactionManifest) -> types.BeginTransac
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.put("/{txn_uuid}/files/{rel_path:path}")
-async def upload_file(txn_uuid: str, rel_path: str, request: Request) -> types.FileMetadata:
-    txn: transaction.Transaction = repository.get_repository().get_transaction(txn_uuid)
+async def upload_file(repo_name: str, txn_uuid: str, rel_path: str, request: Request) -> types.FileMetadata:
+    txn: transaction.Transaction = repository.get_repository(repo_name).get_transaction(txn_uuid)
     return await txn.upload_file(rel_path, request.stream())
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.get("/{txn_uuid}")
-def get_transaction_status(txn_uuid: str) -> types.TransactionStatus:
-    repo: repository.Repository = repository.get_repository()
+def get_transaction_status(repo_name: str, txn_uuid: str) -> types.TransactionStatus:
+    repo: repository.Repository = repository.get_repository(repo_name)
     result: types.TransactionStatus
     try:
         txn: transaction.Transaction = repo.get_transaction(txn_uuid)
@@ -47,8 +47,8 @@ def get_transaction_status(txn_uuid: str) -> types.TransactionStatus:
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.post("/{txn_uuid}/commit")
-def commit_transaction(txn_uuid: str, payload: types.CommitRequest | None = None) -> types.CommitResponse:
-    repo: repository.Repository = repository.get_repository()
+def commit_transaction(repo_name: str, txn_uuid: str, payload: types.CommitRequest | None = None) -> types.CommitResponse:
+    repo: repository.Repository = repository.get_repository(repo_name)
     result: types.CommitResponse
     try:
         txn: transaction.Transaction = repo.get_transaction(txn_uuid)
@@ -69,6 +69,6 @@ def commit_transaction(txn_uuid: str, payload: types.CommitRequest | None = None
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.delete("/{txn_uuid}", status_code=204)
-def abort_transaction(txn_uuid: str) -> None:
-    txn: transaction.Transaction = repository.get_repository().get_transaction(txn_uuid)
+def abort_transaction(repo_name: str, txn_uuid: str) -> None:
+    txn: transaction.Transaction = repository.get_repository(repo_name).get_transaction(txn_uuid)
     txn.abort()

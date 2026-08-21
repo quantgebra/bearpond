@@ -6,13 +6,13 @@ from .. import metadata_store
 from .. import repository
 from . import dependencies
 
-router: APIRouter = APIRouter(tags=["manifest"], dependencies=[Depends(dependencies.require_auth)])
+router: APIRouter = APIRouter(prefix="/repos/{repo_name}", tags=["manifest"], dependencies=[Depends(dependencies.require_auth)])
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.get("/manifest")
-def get_manifest() -> types.Manifest:
-    store: metadata_store.MetadataStore = repository.get_repository().metadata_store
+def get_manifest(repo_name: str) -> types.Manifest:
+    store: metadata_store.MetadataStore = repository.get_repository(repo_name).metadata_store
     # reading the seq first and the manifest by seq gives a consistent snapshot even if a commit lands between the two
     manifest: types.Manifest | None = store.get_manifest(store.get_current_seq())
     if manifest is None:
