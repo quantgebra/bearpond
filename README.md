@@ -48,7 +48,7 @@ bearpond's side of the trade: atomic all-or-nothing commits across many files, l
 | Concept | What it is |
 |---|---|
 | **object** | a file's content, stored once under its sha256 in `objects/` |
-| **path** | a file's logical location in the lake, e.g. `year=2024/month=01/part.parquet` (hive layout; any file format is valid) |
+| **path** | a file's logical location in the lake, e.g. `year=2024/month=01/part.parquet`. Hive-style `key=value` directories are recommended for subset pulls but not required. |
 | **transaction** | an in-flight unit of work (begin → upload → commit or abort); aborts leave no trace |
 | **commit** | the permanent record of a committed transaction: `commit_hash`, `seq`, timestamp, author, full file list |
 | **seq** | the lake's version number — increments on every commit |
@@ -100,7 +100,7 @@ bearpond log --limit 10                 # commit history: hash, seq, author, mes
 
 ```bash
 bearpond pull
-# the workspace now holds the lake in hive layout, with .bearpond/manifest.json
+# the workspace now holds a verified local mirror, with .bearpond/manifest.json
 # recording exactly which server manifest it represents
 ```
 
@@ -119,7 +119,10 @@ bearpond pull --query month=01
 # files that no longer match are pruned; the saved query is in .bearpond/query.json
 
 bearpond pull --query month=01 day=15
-# multiple terms are ANDed: the path must contain every key=value segment
+# multiple terms are ANDed: the path must contain every segment
+
+bearpond pull --query trades 2024-08-22
+# arbitrary paths work too; each term must appear as a /-separated segment
 
 bearpond pull --query
 # switch back to a full mirror (no filter)
@@ -129,6 +132,8 @@ bearpond pull
 ```
 
 Switching queries or `--seq` requires a clean workspace — no in-progress pull and no staged changes. The workspace records the full server manifest in `.bearpond/manifest.json`, the current query in `.bearpond/query.json`, and the paths it has taken responsibility for in `.bearpond/pulled.json`.
+
+Hive-style `key=value` directories are the most useful convention for subset pulls, but they are not required.
 
 **Auth:** the server checks a bearer token when `BEARPOND_TOKEN` is set (unset = open, for local use). The CLI reads the same variable. Real multi-user auth is on the roadmap (below).
 
@@ -242,7 +247,7 @@ npm run build           # outputs to src/bearpond/server/static/
 - **`rebuild-db`** — reconstruct the metadata store from the exported manifests/commits
 - **Compaction** — combine smaller files into larger ones by adding new aggregate paths and removing the now-redundant small ones
 - **Point-in-time pull** — `pull --seq N` to mirror the lake as of any version (the store already reconstructs any seq server-side) *(implemented)*
-- **Subset pull** — `pull --query key=value` to mirror only the partitions matching hive predicates *(implemented)*
+- **Subset pull** — `pull --query key=value ...` to mirror only files whose path contains the given segments *(implemented)*
 - **Web UI** — React interface for browsing repositories, manifests, and commit history *(scaffolded; admin and user management via the UI is future work)*
 
 ## License

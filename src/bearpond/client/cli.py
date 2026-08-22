@@ -167,7 +167,7 @@ def main() -> None:
         "--query",
         nargs="*",
         default=None,
-        help="Pull only files whose path contains these hive key=value segments (e.g. --query year=2024 month=01); "
+        help="Pull only files whose path contains these segments (e.g. --query year=2024 month=01 or --query trades 2024-08-22); "
              "pass --query with no values to switch back to a full mirror",
     )
     pull_parser.set_defaults(func=cmd_pull)

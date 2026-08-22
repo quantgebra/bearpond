@@ -20,16 +20,6 @@ class Repository:
     COMMITS_DIR_NAME = "commits"
 
     # ------------------------------------------------------------------------------------------------------------------
-    @staticmethod
-    def _validate_hive_path(rel_path: str) -> None:
-        # the convention itself lives in types.py, shared with the client — here it's just mapped to the
-        # transaction error vocabulary
-        try:
-            types.validate_hive_path(rel_path)
-        except ValueError as e:
-            raise transaction.TransactionValidationError(str(e)) from e
-
-    # ------------------------------------------------------------------------------------------------------------------
     def __init__(
         self,
         name: str,
@@ -115,7 +105,6 @@ class Repository:
         # build the declared set, rejecting a path named more than once in the same manifest
         declared: dict[str, transaction.FileMeta] = {}
         for declared_file in manifest.added:
-            self._validate_hive_path(declared_file.path)
             if declared_file.path in declared:
                 raise transaction.TransactionValidationError(f"path declared more than once: {declared_file.path}")
             declared[declared_file.path] = transaction.FileMeta(size=declared_file.size, sha256=declared_file.sha256)
@@ -130,7 +119,6 @@ class Repository:
         # build the updated set, rejecting a path named more than once in the same manifest
         updated: dict[str, types.UpdatedFileMetadata] = {}
         for updated_file in manifest.updated:
-            self._validate_hive_path(updated_file.path)
             if updated_file.path in updated:
                 raise transaction.TransactionValidationError(f"path updated more than once: {updated_file.path}")
             updated[updated_file.path] = updated_file

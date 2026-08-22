@@ -79,7 +79,7 @@ def _iter_visible_files(root: Path) -> Iterator[Path]:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def _path_matches_query(rel_path: str, query: list[str]) -> bool:
-    # a hive predicate query is a list of "key=value" terms, all of which must appear as path segments.
+    # a subset query is a list of terms, all of which must appear as path segments.
     # an empty query matches everything (full mirror).
     if not query:
         return True
@@ -381,12 +381,6 @@ class BearpondClient:
                 rel_path: str = path.relative_to(self.workdir.resolve()).as_posix()
             except ValueError:
                 raise server_client.BearpondError(f"path is outside the working directory: {path}")
-            
-            # validate the hive layout
-            try:
-                types.validate_hive_path(rel_path)
-            except ValueError as e:
-                raise server_client.BearpondError(str(e))
             
             # get the hash and size and create the FileMetadata entry
             sha256, size = server_client.hash_and_size(path)

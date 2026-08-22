@@ -30,20 +30,21 @@ def test_begin_rejects_empty_manifest(repo: repository.Repository) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_allows_csv_in_hive_path(repo: repository.Repository) -> None:
-    # the file format restriction is gone: CSV, JSON, ORC, raw text, etc. are all valid as long as the hive layout holds
+    # hive layout is recommended for subset pulls but no longer required
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("year=2024/data.csv", CONTENT)])
     assert txn.load_declared()["year=2024/data.csv"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_begin_rejects_non_hive_segment(repo: repository.Repository) -> None:
-    with pytest.raises(transaction.TransactionValidationError, match="hive partition"):
-        begin(repo, added=[conftest.file_meta("2024/month=01/part.parquet", CONTENT)])
+def test_begin_allows_arbitrary_path(repo: repository.Repository) -> None:
+    # paths are no longer required to follow hive-style key=value directories
+    txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("trades/2024-08-22/executions.json", CONTENT)])
+    assert txn.load_declared()["trades/2024-08-22/executions.json"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_allows_top_level_file(repo: repository.Repository) -> None:
-    # partition segments are optional — a bare filename is a valid add
+    # a bare filename is also valid
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("part.csv", CONTENT)])
     assert txn.load_declared()["part.csv"].size == len(CONTENT)
 

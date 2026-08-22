@@ -1,4 +1,3 @@
-import re
 from typing import Literal
 
 from pydantic import BaseModel
@@ -6,20 +5,6 @@ from pydantic import BaseModel
 # the wire protocol shared by bearpond's server and client — nothing here depends on either, so server and client
 # both depend on this instead of on each other, staying independently deployable while sharing one definition of
 # the shapes they exchange, instead of two hand-kept-in-sync copies
-
-# a hive partition directory segment, e.g. "year=2024" — key=value, no slashes or extra '=' in either side
-_HIVE_PARTITION_SEGMENT: re.Pattern = re.compile(r"^\w+=[^/=]+$")
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-def validate_hive_path(rel_path: str) -> None:
-    # the path convention both sides enforce: files under hive-style key=value partition directories.
-    # raises ValueError on any violation — each side maps that to its own error type.
-    # every directory segment before the filename must be a hive partition key=value pair
-    segments: list[str] = rel_path.split("/")
-    for segment in segments[:-1]:
-        if not _HIVE_PARTITION_SEGMENT.match(segment):
-            raise ValueError(f"path segment is not a valid hive partition (expected key=value): {segment!r} in {rel_path}")
 
 
 # ======================================================================================================================
