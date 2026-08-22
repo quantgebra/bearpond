@@ -19,7 +19,7 @@ bearpond is built for a small team with central data: a handful of ETL processes
 - **Content-addressed storage.** Every distinct file content is stored exactly once, named by its sha256 (`objects/ab/abcdef…`). The name *is* the content — insertion verifies the hash, so integrity is enforced, not assumed.
 - **Versioned manifests.** Every commit produces a manifest — the full list of files in the lake at that version (`manifest-00000042.json`). Clients read the manifest, never directory listings, and can verify every byte they download.
 - **Git-style commit chain.** Each commit record carries a `commit_hash` computed over the change, its parent, its timestamp, and its author — so the history is self-certifying and tamper-evident.
-- **Safe pull.** `bearpond pull` maintains a local mirror of the lake in hive-partition layout, fetching only what changed and pruning what was removed — ready for pandas, Polars, DuckDB, or any Parquet reader.
+- **Safe pull.** `bearpond pull` maintains a local mirror of the lake in hive-partition layout, fetching only what changed and pruning what was removed — ready for pandas, Polars, DuckDB, or any Parquet reader. Subset pulls let a workspace track only the partitions it needs.
 - **Crash-safe by construction.** Immutable objects plus an atomic SQLite metadata commit mean a crash at any point leaves the lake either exactly on a version or cleanly retryable. Startup reconciles the exported manifests with the store automatically.
 
 ## Why bearpond — and the alternatives
@@ -38,7 +38,7 @@ bearpond's side of the trade: atomic all-or-nothing commits across many files, l
 
 ## What bearpond is not
 
-- **A query engine.** The read model is pull-then-query-locally; there is no server-side SQL. At this scale that's a feature — local DuckDB over a pulled mirror is faster than any network query — but it means everyone works from a mirror (subset pulls are on the roadmap).
+- **A query engine.** The read model is pull-then-query-locally; there is no server-side SQL. At this scale that's a feature — local DuckDB over a pulled mirror is faster than any network query — but it means everyone works from a mirror.
 - **Highly available.** The server is one node. Crashes recover cleanly (SQLite plus the exported manifests), but losing the disk is your backup problem, and downtime pauses commits and pulls.
 - **A table format.** No schema enforcement or evolution, no `VERSION AS OF` inside your DataFrame library — bearpond versions *files*, not tables. If you need query-engine-integrated time travel, that's Delta or Iceberg.
 
@@ -109,6 +109,25 @@ bearpond pull --seq 42
 # mirror the lake as of manifest seq 42 instead of the latest
 ```
 
+**Pull a subset (a filtered view):**
+
+```bash
+bearpond pull --query month=01
+# workspace now tracks only paths whose logical path contains month=01
+# files that no longer match are pruned; the saved query is in .bearpond/query.json
+
+bearpond pull --query month=01 day=15
+# multiple terms are ANDed: the path must contain every key=value segment
+
+bearpond pull --query
+# switch back to a full mirror (no filter)
+
+bearpond pull
+# re-sync the current saved view (full mirror or filtered view)
+```
+
+Switching queries or `--seq` requires a clean workspace — no in-progress pull and no staged changes. The workspace records the full server manifest in `.bearpond/manifest.json`, the current query in `.bearpond/query.json`, and the paths it has taken responsibility for in `.bearpond/pulled.json`.
+
 **Auth:** the server checks a bearer token when `BEARPOND_TOKEN` is set (unset = open, for local use). The CLI reads the same variable. Real multi-user auth is on the roadmap (below).
 
 ## HTTP API
@@ -168,7 +187,7 @@ python -m pytest        # 90+ tests: domain, API over live HTTP, end-to-end clie
 - **`rebuild-db`** — reconstruct the metadata store from the exported manifests/commits
 - **Compaction** — combine smaller files into larger ones by adding new aggregate paths and removing the now-redundant small ones
 - **Point-in-time pull** — `pull --seq N` to mirror the lake as of any version (the store already reconstructs any seq server-side) *(implemented)*
-- **Subset pull** — `pull --query key=value` to mirror only the partitions matching hive predicates
+- **Subset pull** — `pull --query key=value` to mirror only the partitions matching hive predicates *(implemented)*
 
 ## License
 

@@ -60,7 +60,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
     status: bearpond_client.WorkspaceStatus = client.status()
 
-    print(f"Workspace at manifest-{status.workspace_seq:08d}")
+    query_label: str = "full mirror" if not status.query else f"query [{', '.join(status.query)}]"
+    print(f"Workspace at manifest-{status.workspace_seq:08d} — {query_label}")
     for path in status.pending:
         print(f"  pending pull:  {path}")
     for path in status.staged_added:
@@ -92,8 +93,9 @@ def cmd_commit(args: argparse.Namespace) -> None:
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_pull(args: argparse.Namespace) -> None:
     client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
+    query: list[str] | None = args.query if args.query is not None else None
     with client.connect(token=args.token) as server:
-        client.pull(server, dry_run=args.dry_run, seq=args.seq)
+        client.pull(server, dry_run=args.dry_run, seq=args.seq, query=query)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -161,6 +163,13 @@ def main() -> None:
     pull_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
     pull_parser.add_argument("--dry-run", action="store_true")
     pull_parser.add_argument("--seq", type=int, default=None, help="Pull a specific manifest version instead of the latest")
+    pull_parser.add_argument(
+        "--query",
+        nargs="*",
+        default=None,
+        help="Pull only files whose path contains these hive key=value segments (e.g. --query year=2024 month=01); "
+             "pass --query with no values to switch back to a full mirror",
+    )
     pull_parser.set_defaults(func=cmd_pull)
 
     log_parser: argparse.ArgumentParser = subparsers.add_parser(

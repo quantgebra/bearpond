@@ -13,6 +13,8 @@ STATE_DIR_NAME = ".bearpond"
 MANIFEST_NAME = "manifest.json"
 PENDING_NAME = "pending.json"
 STAGED_NAME = "staged.json"
+QUERY_NAME = "query.json"
+PULLED_NAME = "pulled.json"
 CONFIG_NAME = "config.json"
 
 
@@ -33,6 +35,7 @@ class WorkspaceConfig(BaseModel):
 # everything the workspace knows about how it differs from the lake, from status()
 class WorkspaceStatus(BaseModel):
     workspace_seq: int
+    query: list[str]
     pending: list[str]
     staged_added: list[types.FileMetadata]
     staged_removed: list[types.FileMetadata]
@@ -59,6 +62,26 @@ def prune_empty_dirs(root: Path, start: Path) -> None:
             break
         current.rmdir()
         current = current.parent
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def _path_matches_query(rel_path: str, query: list[str]) -> bool:
+    # a hive predicate query is a list of "key=value" terms, all of which must appear as path segments.
+    # an empty query matches everything (full mirror).
+    if not query:
+        return True
+    segments: set[str] = set(rel_path.split("/"))
+    return all(term in segments for term in query)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def _filter_manifest_by_query(manifest: types.Manifest, query: list[str]) -> dict[str, FileState]:
+    # the subset of the manifest this workspace is responsible for under the given query
+    return {
+        f.path: FileState(size=f.size, sha256=f.sha256)
+        for f in manifest.files
+        if _path_matches_query(f.path, query)
+    }
 
 
 # ======================================================================================================================
@@ -173,12 +196,12 @@ class BearpondClient:
     
     # ------------------------------------------------------------------------------------------------------------------
     def _tracked_files(self) -> dict[str, FileState]:
-        # the files the workspace tracks per its manifest — no pending overlay: an interrupted pull's progress is
-        # transient download state, not tracked state, and only pull() merges it in (explicitly, for resume)
+        # the files the workspace tracks per its manifest and current query — no pending overlay: an interrupted
+        # pull's progress is transient download state, not tracked state, and only pull() merges it in (explicitly,
+        # for resume)
         manifest: types.Manifest | None = self.tracked_manifest()
-        files: dict[str, FileState] = (
-            {f.path: FileState(size=f.size, sha256=f.sha256) for f in manifest.files} if manifest else {}
-        )
+        query: list[str] = self._load_query()
+        files: dict[str, FileState] = _filter_manifest_by_query(manifest, query) if manifest else {}
         return files
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -194,6 +217,32 @@ class BearpondClient:
     def _save_staged(self, manifest: types.TransactionManifest) -> None:
         self._write_state_file(STAGED_NAME, manifest.model_dump_json(indent=2))
     
+    # ------------------------------------------------------------------------------------------------------------------
+    def _load_query(self) -> list[str]:
+        # the hive-predicate filter defining this workspace's current view — empty means full mirror
+        query_path: Path = self.workdir / STATE_DIR_NAME / QUERY_NAME
+        result: list[str] = []
+        if query_path.exists():
+            result = json.loads(query_path.read_text())
+        return result
+    
+    # ------------------------------------------------------------------------------------------------------------------
+    def _save_query(self, query: list[str]) -> None:
+        self._write_state_file(QUERY_NAME, json.dumps(query, indent=2))
+    
+    # ------------------------------------------------------------------------------------------------------------------
+    def _load_pulled(self) -> set[str]:
+        # the set of paths this workspace has taken responsibility for under its current (or most recent) query
+        pulled_path: Path = self.workdir / STATE_DIR_NAME / PULLED_NAME
+        result: set[str] = set()
+        if pulled_path.exists():
+            result = set(json.loads(pulled_path.read_text()))
+        return result
+    
+    # ------------------------------------------------------------------------------------------------------------------
+    def _save_pulled(self, pulled: set[str]) -> None:
+        self._write_state_file(PULLED_NAME, json.dumps(sorted(pulled), indent=2))
+    
     # --- read-only views ----------------------------------------------------------------------------------------------
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -206,6 +255,18 @@ class BearpondClient:
             raise server_client.BearpondError(
                 f"workspace has an interrupted pull ({len(pending)} file(s) pending) — "
                 f"run `bearpond pull` to finish it, or delete {PENDING_NAME} to abandon it"
+            )
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def _require_no_staged_changes(self) -> None:
+        # switching the workspace's base manifest or query changes the set of tracked files that staged changes are
+        # relative to. Allowing a switch with staged work would leave the staging area inconsistent with its new base,
+        # so we require a clean staging area before changing views, just as git refuses to checkout another branch
+        # with uncommitted changes.
+        staged_manifest: types.TransactionManifest = self._staged_manifest()
+        if staged_manifest.added or staged_manifest.removed or staged_manifest.updated:
+            raise server_client.BearpondError(
+                "workspace has staged changes — commit or reset them before switching the manifest or query"
             )
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -257,6 +318,7 @@ class BearpondClient:
         
         return WorkspaceStatus(
             workspace_seq=seq,
+            query=self._load_query(),
             pending=sorted(self._load_pending()),
             staged_added=staged_manifest.added,
             staged_removed=staged_manifest.removed,
@@ -455,36 +517,49 @@ class BearpondClient:
         return result
     
     # ------------------------------------------------------------------------------------------------------------------
-    def pull(self, server: server_client.ServerClient, dry_run: bool = False, seq: int | None = None) -> None:
-        # a point-in-time pull changes the base manifest the workspace represents, which conflicts with an interrupted
-        # pull whose pending overlay was computed against a different target
-        if seq is not None:
+    def pull(
+        self,
+        server: server_client.ServerClient,
+        dry_run: bool = False,
+        seq: int | None = None,
+        query: list[str] | None = None,
+    ) -> None:
+        # a point-in-time pull or a query switch changes the base the workspace represents, which conflicts with an
+        # interrupted pull whose pending overlay was computed against a different target
+        saved_query: list[str] = self._load_query()
+        effective_query: list[str] = query if query is not None else saved_query
+        if seq is not None or (query is not None and query != saved_query):
             self._require_no_pending_pull()
+            self._require_no_staged_changes()
         
         # let's make sure that the workdir exists
         self.workdir.mkdir(parents=True, exist_ok=True)
         
         # get the manifest from the server
         manifest: types.Manifest = server.get_manifest(seq=seq)
-        manifest_files: dict[str, FileState] = {
-            f.path: FileState(size=f.size, sha256=f.sha256) for f in manifest.files
-        }
+        target_files: dict[str, FileState] = _filter_manifest_by_query(manifest, effective_query)
         
-        # get the workspace manifes and the workspace files
-        # the workspace files are the ones from the current manifest as well as from an interrupted pull
-        workspace_manifest: types.Manifest | None = self.tracked_manifest()
-        # the resume view: tracked files plus whatever an interrupted pull already fetched — the one place
-        # pending merges into the file set, and it's explicit
-        workspace_files: dict[str, FileState] = self._tracked_files()
+        # the files this workspace has previously taken responsibility for — these are the ones we may prune when
+        # the view changes, just like git removes tracked files that don't exist on the new branch
+        previous_pulled: set[str] = self._load_pulled()
+        
+        # the resume view: previously pulled files plus whatever an interrupted pull already fetched — the one place
+        # pending merges into the file set, and it's explicit. _tracked_files() uses the saved query because the new
+        # query is only persisted once the pull succeeds.
+        workspace_files: dict[str, FileState] = {
+            p: FileState(size=f.size, sha256=f.sha256)
+            for p, f in self._tracked_files().items()
+        }
         workspace_files.update(self._load_pending())
         
-        # calculate file actions
-        to_download: list = [p for p in manifest_files if workspace_files.get(p) != manifest_files[p]]
-        to_delete: list = [p for p in workspace_files if p not in manifest_files]
+        # calculate file actions against the target view
+        to_download: list[str] = [p for p in target_files if workspace_files.get(p) != target_files[p]]
+        to_delete: list[str] = [p for p in previous_pulled if p not in target_files]
         
+        query_label: str = "full mirror" if not effective_query else f"query [{', '.join(effective_query)}]"
         print(
-            f"manifest-{manifest.seq:08d}: {len(manifest_files)} files "
-            f"({len(to_download)} to download, {len(to_delete)} to delete)"
+            f"manifest-{manifest.seq:08d}: {len(target_files)} files "
+            f"({len(to_download)} to download, {len(to_delete)} to delete) — {query_label}"
         )
         
         if dry_run:
@@ -496,13 +571,13 @@ class BearpondClient:
             # progress is saved after every single file so a crash mid-pull loses at most the file in flight: the
             # workspace keeps its previous manifest while a "pending" overlay accumulates downloaded files, and it
             # only adopts the new manifest once it is fully reflected on disk. Deletions need no progress tracking —
-            # they're recomputable from the manifest diff and idempotent to redo.
+            # they're recomputable from previous_pulled and the target set and are idempotent to redo.
             pending: dict[str, FileState] = {}
             
             # download files
             for rel_path in to_download:
                 dest_path: Path = self.workdir / rel_path
-                expected_file_state: FileState = manifest_files[rel_path]
+                expected_file_state: FileState = target_files[rel_path]
                 
                 # test the file sha256
                 actual_sha256: str = server.download_file(rel_path, dest_path)
@@ -515,17 +590,19 @@ class BearpondClient:
                 self._save_pending(pending)
                 print(f"  fetched: {rel_path}")
             
-            # delete files, pruning each deleted file's emptied ancestor directories as we go
+            # delete files that were pulled under the previous view but are outside the new one
             for rel_path in to_delete:
-                dest_path = self.workdir / rel_path
+                dest_path: Path = self.workdir / rel_path
                 dest_path.unlink(missing_ok=True)
                 prune_empty_dirs(self.workdir, dest_path)
                 print(f"  pruned: {rel_path}")
             
-            # we've updated to the new manifest, so let's make it official
+            # we've updated to the new manifest and target view, so make all three official
             self._save_manifest(manifest)
+            self._save_query(effective_query)
+            self._save_pulled(set(target_files))
             (self.workdir / STATE_DIR_NAME / PENDING_NAME).unlink(missing_ok=True)
             print(
                 f"Pulled to manifest-{manifest.seq:08d}: "
-                f"+{len(to_download)} -{len(to_delete)} (total {len(manifest.files)} files)"
+                f"+{len(to_download)} -{len(to_delete)} (total {len(target_files)} files)"
             )

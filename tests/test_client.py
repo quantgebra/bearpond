@@ -418,6 +418,35 @@ def test_pull_to_specific_seq_refuses_with_pending_pull(
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_pull_switching_view_refuses_with_staged_changes(
+    client: server_client.ServerClient,
+    source_dir: Path,
+    tmp_path: Path,
+) -> None:
+    commit_file(client, source_dir, PATH_A)
+    commit_file(client, source_dir, PATH_B)
+
+    target: Path = tmp_path / "mirror"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
+    workspace.pull(client)
+
+    # stage an update against the current full-mirror view
+    new_content: bytes = b"updated alpha parquet bytes"
+    (target / PATH_A).write_bytes(new_content)
+    workspace.add([target / PATH_A])
+
+    # switching the query or seq is rejected while staged changes exist
+    with pytest.raises(server_client.BearpondError, match="staged changes"):
+        workspace.pull(client, query=["month=02"])
+
+    with pytest.raises(server_client.BearpondError, match="staged changes"):
+        workspace.pull(client, seq=1)
+
+    # but a plain re-sync of the current view is still allowed
+    workspace.pull(client)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_cli_pull_with_seq(
     client: server_client.ServerClient,
     source_dir: Path,
@@ -432,7 +461,7 @@ def test_cli_pull_with_seq(
     bearpond_client.BearpondClient.clone(live_server, conftest.REPO_NAME, workdir)
 
     monkeypatch.chdir(workdir)
-    cli.cmd_pull(argparse.Namespace(token=None, dry_run=False, seq=1))
+    cli.cmd_pull(argparse.Namespace(token=None, dry_run=False, seq=1, query=None))
 
     assert (workdir / PATH_A).read_bytes() == CONTENT_A
     assert not (workdir / PATH_B).exists()
@@ -552,3 +581,113 @@ def test_cli_update_flow(
     assert "~1 file(s)" in out
 
     assert bearpond_client.BearpondClient(workdir).tracked_manifest().seq == 2
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_pull_with_query_downloads_only_matching_files(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    commit_source_dir(client, source_dir)
+
+    target: Path = tmp_path / "mirror"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
+    workspace.pull(client, query=["month=01"])
+
+    assert (target / PATH_A).read_bytes() == CONTENT_A
+    assert not (target / PATH_B).exists()
+
+    status: bearpond_client.WorkspaceStatus = workspace.status()
+    assert status.query == ["month=01"]
+    assert PATH_A not in status.missing
+    assert PATH_B not in status.missing  # outside the query view
+    assert PATH_B not in status.untracked  # outside the query view
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_pull_switching_query_prunes_files_from_old_view(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    commit_source_dir(client, source_dir)
+
+    target: Path = tmp_path / "mirror"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
+    workspace.pull(client, query=["month=01"])
+    assert (target / PATH_A).exists()
+    assert not (target / PATH_B).exists()
+
+    workspace.pull(client, query=["month=02"])
+    assert not (target / PATH_A).exists()
+    assert (target / PATH_B).read_bytes() == CONTENT_B
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_pull_full_mirror_after_subset_restores_all_files(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    commit_source_dir(client, source_dir)
+
+    target: Path = tmp_path / "mirror"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
+    workspace.pull(client, query=["month=01"])
+    assert not (target / PATH_B).exists()
+
+    workspace.pull(client, query=[])
+    assert (target / PATH_A).read_bytes() == CONTENT_A
+    assert (target / PATH_B).read_bytes() == CONTENT_B
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_pull_query_leaves_user_files_outside_view_untouched(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    commit_source_dir(client, source_dir)
+
+    target: Path = tmp_path / "mirror"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
+    workspace.pull(client, query=["month=01"])
+
+    # a user drops an unrelated file into the workspace — it should survive a query switch
+    extra_path: str = "year=2024/month=03/extra.parquet"
+    extra_file: Path = target / extra_path
+    extra_file.parent.mkdir(parents=True)
+    extra_file.write_bytes(b"user file")
+
+    workspace.pull(client, query=["month=02"])
+    assert not (target / PATH_A).exists()
+    assert (target / PATH_B).read_bytes() == CONTENT_B
+    assert extra_file.read_bytes() == b"user file"
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_status_shows_current_query(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    commit_source_dir(client, source_dir)
+
+    target: Path = tmp_path / "mirror"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
+    workspace.pull(client, query=["month=01"])
+
+    status: bearpond_client.WorkspaceStatus = workspace.status()
+    assert status.query == ["month=01"]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_cli_pull_with_query(
+    client: server_client.ServerClient,
+    source_dir: Path,
+    live_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit_source_dir(client, source_dir)
+
+    workdir: Path = tmp_path / "ws"
+    bearpond_client.BearpondClient.clone(live_server, conftest.REPO_NAME, workdir)
+
+    monkeypatch.chdir(workdir)
+    cli.cmd_pull(argparse.Namespace(token=None, dry_run=False, seq=None, query=["month=01"]))
+
+    assert (workdir / PATH_A).read_bytes() == CONTENT_A
+    assert not (workdir / PATH_B).exists()
+    assert bearpond_client.BearpondClient(workdir).status().query == ["month=01"]
