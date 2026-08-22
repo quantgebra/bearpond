@@ -110,27 +110,116 @@ class MetadataStore(Protocol):
 
 
 # ======================================================================================================================
-class SqliteMetadataStore(MetadataStore):
+# server-wide metadata store: every method takes a repo name so one database can host many repositories.
+class ServerMetadataStore(Protocol):
 
-    # one table of record: every path ever added, with the txn/seq that added it and — once removed — the txn/seq
-    # that removed it. The lake's current state is simply the live rows (removed_seq IS NULL); there is no separate
-    # "current" table to drift out of sync with this one.
+    def get_file_metadata(self, repo: str, path: str) -> types.FileMetadata | None: ...
+    def list_directory(self, repo: str, prefix: str, limit: int, cursor: str | None = None) -> DirectoryPage: ...
+    def get_current_seq(self, repo: str) -> int: ...
+    def get_manifest(self, repo: str, seq: int) -> types.Manifest | None: ...
+    def commit_changes(
+        self,
+        repo: str,
+        txn_uuid: str,
+        added: list[types.FileMetadata],
+        removed: list[types.FileMetadata],
+        updated: list[types.UpdatedFileMetadata],
+        user: str | None = None,
+        reason: str | None = None,
+    ) -> types.CommitRecord: ...
+    def get_commit_record(self, repo: str, txn_uuid: str) -> types.CommitRecord | None: ...
+    def get_commit_record_list(self, repo: str) -> list[types.CommitRecord]: ...
+    def get_commit_record_page(self, repo: str, limit: int, before_seq: int | None = None) -> types.CommitHistoryPage: ...
+    def register_repo(self, repo: str) -> None: ...
+    def list_repos(self) -> list[str]: ...
+    def close(self) -> None: ...
+
+
+# ======================================================================================================================
+# a repo-scoped view over a server-wide store: supplies the original MetadataStore interface without requiring the
+# caller to pass the repository name on every call.
+class RepoMetadataStoreView:
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def __init__(self, repo: str, store: ServerMetadataStore) -> None:
+        self._repo: str = repo
+        self._store: ServerMetadataStore = store
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_file_metadata(self, path: str) -> types.FileMetadata | None:
+        return self._store.get_file_metadata(self._repo, path)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def list_directory(self, prefix: str, limit: int, cursor: str | None = None) -> DirectoryPage:
+        return self._store.list_directory(self._repo, prefix, limit, cursor)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_current_seq(self) -> int:
+        return self._store.get_current_seq(self._repo)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_manifest(self, seq: int) -> types.Manifest | None:
+        return self._store.get_manifest(self._repo, seq)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def commit_changes(
+        self,
+        txn_uuid: str,
+        added: list[types.FileMetadata],
+        removed: list[types.FileMetadata],
+        updated: list[types.UpdatedFileMetadata],
+        user: str | None = None,
+        reason: str | None = None,
+    ) -> types.CommitRecord:
+        return self._store.commit_changes(self._repo, txn_uuid, added, removed, updated, user, reason)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_record(self, txn_uuid: str) -> types.CommitRecord | None:
+        return self._store.get_commit_record(self._repo, txn_uuid)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_record_list(self) -> list[types.CommitRecord]:
+        return self._store.get_commit_record_list(self._repo)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_commit_record_page(self, limit: int, before_seq: int | None = None) -> types.CommitHistoryPage:
+        return self._store.get_commit_record_page(self._repo, limit, before_seq)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def close(self) -> None:
+        # the underlying server-wide store owns the connection; individual repo views must not close it
+        pass
+
+
+# ======================================================================================================================
+class SqliteMetadataStore(ServerMetadataStore):
+
+    # one database per server. each table carries a repo column so multiple repositories can share the same file.
+    # seq remains per-repo, and txn_uuid is globally unique.
     _SCHEMA = """
+    CREATE TABLE IF NOT EXISTS repos (
+        name TEXT PRIMARY KEY
+    );
+
     CREATE TABLE IF NOT EXISTS objects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repo TEXT NOT NULL,
         path TEXT NOT NULL,
         size INTEGER NOT NULL,
         sha256 TEXT NOT NULL,
         added_txn TEXT NOT NULL,
         added_seq INTEGER NOT NULL,
         removed_txn TEXT,
-        removed_seq INTEGER
+        removed_seq INTEGER,
+        FOREIGN KEY (repo) REFERENCES repos(name)
     );
-    -- at most one live row per path — the invariant a separate current table's primary key would otherwise enforce
-    CREATE UNIQUE INDEX IF NOT EXISTS objects_live_path ON objects(path) WHERE removed_seq IS NULL;
+    -- at most one live row per (repo, path)
+    CREATE UNIQUE INDEX IF NOT EXISTS objects_live_path ON objects(repo, path) WHERE removed_seq IS NULL;
+    CREATE INDEX IF NOT EXISTS objects_repo_path ON objects(repo, path);
     
     CREATE TABLE IF NOT EXISTS commits (
-        commit_hash TEXT NOT NULL UNIQUE,
+        repo TEXT NOT NULL,
+        commit_hash TEXT NOT NULL,
         parent_commit_hash TEXT,
         txn_uuid TEXT PRIMARY KEY,
         seq INTEGER NOT NULL,
@@ -139,8 +228,11 @@ class SqliteMetadataStore(MetadataStore):
         removed TEXT NOT NULL,
         updated TEXT NOT NULL,
         user TEXT,
-        reason TEXT
+        reason TEXT,
+        FOREIGN KEY (repo) REFERENCES repos(name)
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS commits_repo_seq ON commits(repo, seq);
+    CREATE INDEX IF NOT EXISTS commits_repo_txn ON commits(repo, txn_uuid);
     """
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -186,10 +278,10 @@ class SqliteMetadataStore(MetadataStore):
                 self._conn.commit()
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_file_metadata(self, path: str) -> types.FileMetadata | None:
+    def get_file_metadata(self, repo: str, path: str) -> types.FileMetadata | None:
         with self._lock:
             row: tuple | None = self._conn.execute(
-                "SELECT size, sha256 FROM objects WHERE path = ? AND removed_seq IS NULL", (path,)
+                "SELECT size, sha256 FROM objects WHERE repo = ? AND path = ? AND removed_seq IS NULL", (repo, path)
             ).fetchone()
         result: types.FileMetadata | None = None
         if row is not None:
@@ -197,7 +289,7 @@ class SqliteMetadataStore(MetadataStore):
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
-    def list_directory(self, prefix: str, limit: int, cursor: str | None = None) -> "DirectoryPage":
+    def list_directory(self, repo: str, prefix: str, limit: int, cursor: str | None = None) -> "DirectoryPage":
         # S3-style prefix+delimiter ("/") listing over the live mapping: files directly under the prefix, and the
         # distinct immediate subdirectories rolled up in sqlite (the standard's Contents + CommonPrefixes).
         # GLOB rather than LIKE — LIKE is case-insensitive for ASCII in sqlite (wrong for paths), and a
@@ -209,14 +301,14 @@ class SqliteMetadataStore(MetadataStore):
             # one row beyond the limit is how we know the page is truncated
             file_rows: list[tuple] = self._conn.execute(
                 "SELECT path, size, sha256 FROM objects "
-                "WHERE removed_seq IS NULL AND path GLOB ? AND instr(substr(path, ?), '/') = 0 AND path > ? "
+                "WHERE repo = ? AND removed_seq IS NULL AND path GLOB ? AND instr(substr(path, ?), '/') = 0 AND path > ? "
                 "ORDER BY path LIMIT ?",
-                (glob_prefix, rest_start, cursor or "", limit + 1),
+                (repo, glob_prefix, rest_start, cursor or "", limit + 1),
             ).fetchall()
             dir_rows: list[tuple] = self._conn.execute(
                 "SELECT DISTINCT substr(path, 1, ? + instr(substr(path, ?), '/') - 1) AS dir FROM objects "
-                "WHERE removed_seq IS NULL AND path GLOB ? AND instr(substr(path, ?), '/') > 0 ORDER BY dir",
-                (len(prefix), rest_start, glob_prefix, rest_start),
+                "WHERE repo = ? AND removed_seq IS NULL AND path GLOB ? AND instr(substr(path, ?), '/') > 0 ORDER BY dir",
+                (len(prefix), rest_start, repo, glob_prefix, rest_start),
             ).fetchall()
 
         truncated: bool = len(file_rows) > limit
@@ -228,21 +320,23 @@ class SqliteMetadataStore(MetadataStore):
         )
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_current_seq(self) -> int:
+    def get_current_seq(self, repo: str) -> int:
         with self._lock:
             # COALESCE covers the empty commits table: an aggregate query always returns one row, MAX of zero rows
             # is NULL, and 0 is the lake's "no commits yet" sentinel — the first commit gets seq 1
-            seq: int = self._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM commits").fetchone()[0]
+            seq: int = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM commits WHERE repo = ?", (repo,)
+            ).fetchone()[0]
         return seq
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_manifest(self, seq: int) -> types.Manifest | None:
+    def get_manifest(self, repo: str, seq: int) -> types.Manifest | None:
         # the lake as of the given seq: everything added at or before it and not yet removed by then. Returns
         # None for a seq with no commit record (0 — the never-committed state — or beyond the current seq).
         with self._lock:
             # every recorded commit advances the seq exactly once, so each seq has exactly one commit record
             row: tuple | None = self._conn.execute(
-                "SELECT committed_at FROM commits WHERE seq = ?", (seq,)
+                "SELECT committed_at FROM commits WHERE repo = ? AND seq = ?", (repo, seq)
             ).fetchone()
 
             # if there is a commit with the given seq
@@ -251,8 +345,8 @@ class SqliteMetadataStore(MetadataStore):
                 # select all the files that were added before or by seq and have been deleted (yet)
                 rows: list[tuple] = self._conn.execute(
                     "SELECT path, size, sha256 FROM objects "
-                    "WHERE added_seq <= ? AND (removed_seq IS NULL OR removed_seq > ?) ORDER BY path",
-                    (seq, seq),
+                    "WHERE repo = ? AND added_seq <= ? AND (removed_seq IS NULL OR removed_seq > ?) ORDER BY path",
+                    (repo, seq, seq),
                 ).fetchall()
                 
                 # creat the Manifest with the selected FileMetadata
@@ -264,12 +358,12 @@ class SqliteMetadataStore(MetadataStore):
         return manifest
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record(self, txn_uuid: str) -> types.CommitRecord | None:
+    def get_commit_record(self, repo: str, txn_uuid: str) -> types.CommitRecord | None:
         with self._lock:
             row: tuple | None = self._conn.execute(
                 "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason "
-                "FROM commits WHERE txn_uuid = ?",
-                (txn_uuid,),
+                "FROM commits WHERE repo = ? AND txn_uuid = ?",
+                (repo, txn_uuid),
             ).fetchone()
         record: types.CommitRecord | None = None
         if row is not None:
@@ -279,6 +373,7 @@ class SqliteMetadataStore(MetadataStore):
     # ------------------------------------------------------------------------------------------------------------------
     def commit_changes(
         self,
+        repo: str,
         txn_uuid: str,
         added: list[types.FileMetadata],
         removed: list[types.FileMetadata],
@@ -289,20 +384,23 @@ class SqliteMetadataStore(MetadataStore):
         record: types.CommitRecord
         with self._lock:
             # a commit that already recorded itself is a retry after a lost response — answer with the original record
-            existing: types.CommitRecord | None = self.get_commit_record(txn_uuid)
+            existing: types.CommitRecord | None = self.get_commit_record(repo, txn_uuid)
             if existing is not None:
                 record = existing
             else:
                 committed_at: str = datetime.now(timezone.utc).isoformat()
-                
+
                 # BEGIN IMMEDIATE takes the write lock up front, so the checks below and the updates they guard are
                 # one atomic unit — a concurrent commit can't slip between check and act
                 self._conn.execute("BEGIN IMMEDIATE")
                 try:
+                    # ensure the repo is registered before committing — idempotent insert
+                    self._conn.execute("INSERT OR IGNORE INTO repos (name) VALUES (?)", (repo,))
+
                     current: dict[str, types.FileMetadata] = {
                         row[0]: types.FileMetadata(path=row[0], size=row[1], sha256=row[2])
                         for row in self._conn.execute(
-                            "SELECT path, size, sha256 FROM objects WHERE removed_seq IS NULL"
+                            "SELECT path, size, sha256 FROM objects WHERE repo = ? AND removed_seq IS NULL", (repo,)
                         ).fetchall()
                     }
 
@@ -357,11 +455,13 @@ class SqliteMetadataStore(MetadataStore):
                             )
 
                     # the checks above guarantee this commit changes the mapping, so the seq always advances
-                    seq: int = self._conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM commits").fetchone()[0]
+                    seq: int = self._conn.execute(
+                        "SELECT COALESCE(MAX(seq), 0) + 1 FROM commits WHERE repo = ?", (repo,)
+                    ).fetchone()[0]
 
                     # the head of the chain becomes this commit's parent, binding it to the full history behind it
                     parent_row: tuple | None = self._conn.execute(
-                        "SELECT commit_hash FROM commits ORDER BY seq DESC LIMIT 1"
+                        "SELECT commit_hash FROM commits WHERE repo = ? ORDER BY seq DESC LIMIT 1", (repo,)
                     ).fetchone()
                     parent_commit_hash: str | None = parent_row[0] if parent_row is not None else None
                     commit_hash: str = compute_commit_hash(
@@ -370,34 +470,35 @@ class SqliteMetadataStore(MetadataStore):
 
                     for added_file in added:
                         self._conn.execute(
-                            "INSERT INTO objects (path, size, sha256, added_txn, added_seq) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            (added_file.path, added_file.size, added_file.sha256, txn_uuid, seq),
+                            "INSERT INTO objects (repo, path, size, sha256, added_txn, added_seq) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (repo, added_file.path, added_file.size, added_file.sha256, txn_uuid, seq),
                         )
                     for removed_file in removed:
                         self._conn.execute(
                             "UPDATE objects SET removed_txn = ?, removed_seq = ? "
-                            "WHERE path = ? AND removed_seq IS NULL",
-                            (txn_uuid, seq, removed_file.path),
+                            "WHERE repo = ? AND path = ? AND removed_seq IS NULL",
+                            (txn_uuid, seq, repo, removed_file.path),
                         )
                     for updated_file in updated:
                         # mark the old content's row as removed and insert a new live row for the replacement content,
                         # preserving the full history of the path
                         self._conn.execute(
                             "UPDATE objects SET removed_txn = ?, removed_seq = ? "
-                            "WHERE path = ? AND removed_seq IS NULL",
-                            (txn_uuid, seq, updated_file.path),
+                            "WHERE repo = ? AND path = ? AND removed_seq IS NULL",
+                            (txn_uuid, seq, repo, updated_file.path),
                         )
                         self._conn.execute(
-                            "INSERT INTO objects (path, size, sha256, added_txn, added_seq) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            (updated_file.path, updated_file.new_size, updated_file.new_sha256, txn_uuid, seq),
+                            "INSERT INTO objects (repo, path, size, sha256, added_txn, added_seq) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (repo, updated_file.path, updated_file.new_size, updated_file.new_sha256, txn_uuid, seq),
                         )
                     self._conn.execute(
                         "INSERT INTO commits "
-                        "(commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "(repo, commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
+                            repo,
                             commit_hash,
                             parent_commit_hash,
                             txn_uuid,
@@ -430,22 +531,23 @@ class SqliteMetadataStore(MetadataStore):
         return record
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record_list(self) -> list[types.CommitRecord]:
+    def get_commit_record_list(self, repo: str) -> list[types.CommitRecord]:
         with self._lock:
             rows: list[tuple] = self._conn.execute(
                 "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason "
-                "FROM commits ORDER BY seq, committed_at"
+                "FROM commits WHERE repo = ? ORDER BY seq, committed_at",
+                (repo,),
             ).fetchall()
         return [self._row_to_commit_record(row) for row in rows]
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record_page(self, limit: int, before_seq: int | None = None) -> types.CommitHistoryPage:
+    def get_commit_record_page(self, repo: str, limit: int, before_seq: int | None = None) -> types.CommitHistoryPage:
         # newest-first history, keyset-paginated by seq — one extra row beyond the limit marks truncation
         with self._lock:
             rows: list[tuple] = self._conn.execute(
                 "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason "
-                "FROM commits WHERE (? IS NULL OR seq < ?) ORDER BY seq DESC LIMIT ?",
-                (before_seq, before_seq, limit + 1),
+                "FROM commits WHERE repo = ? AND (? IS NULL OR seq < ?) ORDER BY seq DESC LIMIT ?",
+                (repo, before_seq, before_seq, limit + 1),
             ).fetchall()
 
         truncated: bool = len(rows) > limit
@@ -454,6 +556,18 @@ class SqliteMetadataStore(MetadataStore):
             records=[self._row_to_commit_record(row) for row in page_rows],
             next_cursor=page_rows[-1][3] if truncated and page_rows else None,
         )
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def register_repo(self, repo: str) -> None:
+        with self._lock:
+            self._conn.execute("INSERT OR IGNORE INTO repos (name) VALUES (?)", (repo,))
+            self._conn.commit()
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def list_repos(self) -> list[str]:
+        with self._lock:
+            rows: list[tuple] = self._conn.execute("SELECT name FROM repos ORDER BY name").fetchall()
+        return [row[0] for row in rows]
 
     # ------------------------------------------------------------------------------------------------------------------
     def close(self) -> None:

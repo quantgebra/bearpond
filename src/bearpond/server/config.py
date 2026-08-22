@@ -12,6 +12,10 @@ CONFIG_DIR_ENV_VAR = "BEARPOND_CONFIG_DIR"
 class ServerConfig:
     # the directory that holds the server's repositories — one subdirectory per repo
     repos_root: Path
+    # path to the server-wide SQLite metadata database; defaults to a file named bearpond.sqlite inside repos_root
+    db_path: Path
+    # path to the server-wide content-addressed object store; defaults to <repos_root>/objects
+    object_store_root: Path
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -36,4 +40,14 @@ def load_server_config(config_dir: Path) -> ServerConfig:
     if not repos_root.is_absolute():
         repos_root = (config_dir / repos_root).resolve()
 
-    return ServerConfig(repos_root=repos_root)
+    # db_path defaults to repos_root/bearpond.sqlite; relative paths resolve against the config dir
+    db_path: Path = Path(raw.get("db_path", repos_root / "bearpond.sqlite")).expanduser()
+    if not db_path.is_absolute():
+        db_path = (config_dir / db_path).resolve()
+
+    # object_store_root defaults to repos_root/objects; relative paths resolve against the config dir
+    object_store_root: Path = Path(raw.get("object_store_root", repos_root / "objects")).expanduser()
+    if not object_store_root.is_absolute():
+        object_store_root = (config_dir / object_store_root).resolve()
+
+    return ServerConfig(repos_root=repos_root, db_path=db_path, object_store_root=object_store_root)

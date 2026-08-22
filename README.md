@@ -190,14 +190,14 @@ Errors are JSON `{"detail": …}` with sensible statuses: 400 invalid, 401 unaut
 
 ```
 repos_root/                 # one subdirectory per repository
+  bearpond.sqlite           # server-wide metadata store: repo → path → object mapping, commit history
+  objects/ab/abcdef…        # server-wide content-addressed object store (the name is the sha256)
   <repo>/
-    objects/ab/abcdef…      # content-addressed files (the name is the sha256)
     staging/<txn_uuid>/     # in-flight uploads, invisible until commit
     manifests/              # exported audit trail: manifest-*.json, commits/*.json
-    bearpond.sqlite         # the metadata store: path → object mapping, commit history
 ```
 
-The **metadata store** (SQLite) is the system of record: one `objects` table holding every path ever added with the txn/seq that added and (eventually) removed it, and a `commits` table with the full, hash-chained history. The manifest files on disk are an export of that state — an audit trail and a rebuild source — not the source of truth themselves. Serving reads from the store, with history retained, is also what makes point-in-time queries possible (any manifest seq can be reconstructed).
+The **metadata store** (SQLite) is the system of record: one database per server, with `objects` and `commits` tables scoped by repository. It holds every path ever added with the txn/seq that added and (eventually) removed it, plus the full hash-chained commit history. The manifest files on disk are an export of that state — an audit trail and a rebuild source — not the source of truth themselves. Serving reads from the store, with history retained, is also what makes point-in-time queries possible (any manifest seq can be reconstructed).
 
 A commit is *content before pointers*: staged files are placed into the object store first (idempotent — the name is the hash), then one atomic SQLite transaction flips every path mapping at once and appends the commit record.
 
@@ -216,7 +216,7 @@ tests/                # pytest suite (domain, API, client end-to-end)
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest        # 118 tests: domain, API over live HTTP, end-to-end client flows
+python -m pytest        # 123 tests: domain, API over live HTTP, end-to-end client flows
 ```
 
 The web UI lives in `web/` and uses Vite + React + TypeScript. To work on it:

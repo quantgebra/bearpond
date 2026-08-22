@@ -4,6 +4,7 @@ import pytest
 
 import conftest
 from bearpond import types
+from bearpond.server import config
 from bearpond.server import metadata_store
 from bearpond.server import repository
 from bearpond.server import transaction
@@ -150,3 +151,54 @@ def test_recover_reexports_deleted_exports(repo: repository.Repository) -> None:
     assert (repo.manifest_root / "manifest-00000001.json").is_file()
     assert repo.latest_pointer.read_text().strip() == "manifest-00000001.json"
     assert (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").is_file()
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_multiple_repos_share_one_db_but_remain_isolated(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repository.configure(
+        config.ServerConfig(
+            repos_root=repo_root,
+            db_path=repo_root / "bearpond.sqlite",
+            object_store_root=repo_root / "objects",
+        )
+    )
+    first: repository.Repository = repository.create_repository("first")
+    second: repository.Repository = repository.create_repository("second")
+
+    conftest.commit_files(first, {"year=2024/a.csv": b"first repo"})
+    conftest.commit_files(second, {"year=2024/b.csv": b"second repo"})
+
+    assert first.metadata_store.get_current_seq() == 1
+    assert second.metadata_store.get_current_seq() == 1
+
+    first_manifest: types.Manifest = first.metadata_store.get_manifest(1)
+    second_manifest: types.Manifest = second.metadata_store.get_manifest(1)
+    assert [f.path for f in first_manifest.files] == ["year=2024/a.csv"]
+    assert [f.path for f in second_manifest.files] == ["year=2024/b.csv"]
+
+    assert repository.list_repositories() == ["first", "second"]
+    repository.close()
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_multiple_repos_share_one_object_store(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repository.configure(
+        config.ServerConfig(
+            repos_root=repo_root,
+            db_path=repo_root / "bearpond.sqlite",
+            object_store_root=repo_root / "objects",
+        )
+    )
+    first: repository.Repository = repository.create_repository("first")
+    second: repository.Repository = repository.create_repository("second")
+
+    shared_content: bytes = b"shared bytes"
+    conftest.commit_files(first, {"year=2024/shared.csv": shared_content})
+    conftest.commit_files(second, {"year=2024/shared.csv": shared_content})
+
+    first_location: Path = first.object_store.get_location_for_address(conftest.sha256_hex(shared_content))
+    second_location: Path = second.object_store.get_location_for_address(conftest.sha256_hex(shared_content))
+    assert first_location == second_location
+    assert first_location.read_bytes() == shared_content
+
+    repository.close()

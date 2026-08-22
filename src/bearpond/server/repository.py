@@ -30,17 +30,21 @@ class Repository:
             raise transaction.TransactionValidationError(str(e)) from e
 
     # ------------------------------------------------------------------------------------------------------------------
-    def __init__(self, repo_dir: Path, store: metadata_store.MetadataStore | None = None) -> None:
-        # the repository's entire on-disk layout: content-addressed objects, in-flight uploads, exported manifests
-        self.objects_root: Path = repo_dir / "objects"
+    def __init__(
+        self,
+        name: str,
+        repo_dir: Path,
+        store: metadata_store.MetadataStore,
+        obj_store: object_store.ObjectStore,
+    ) -> None:
+        # the repository's on-disk layout: in-flight uploads and exported manifests. content-addressed objects live in
+        # a server-wide store shared across repositories, so identical bytes are stored once regardless of repo.
+        self.name: str = name
         self.staging_root: Path = repo_dir / "staging"
         self.manifest_root: Path = repo_dir / "manifests"
         self.latest_pointer: Path = self.manifest_root / "_latest"
-        self.object_store: object_store.ObjectStore = object_store.ObjectStore(self.objects_root)
-        # the metadata store is the system of record — injectable so tests (or future backends) can swap it
-        self.metadata_store: metadata_store.MetadataStore = (
-            store if store is not None else metadata_store.SqliteMetadataStore(repo_dir / "bearpond.sqlite")
-        )
+        self.object_store: object_store.ObjectStore = obj_store
+        self.metadata_store: metadata_store.MetadataStore = store
 
     # ------------------------------------------------------------------------------------------------------------------
     def _commits_dir(self) -> Path:
@@ -220,15 +224,21 @@ class InvalidRepositoryNameError(RepositoryError):
 # a repo name must be a safe single path segment — it becomes a directory under repos_root and a URL component
 _REPO_NAME: re.Pattern = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
-# the server's repositories, resolved lazily by name from the configured repos_root
+# the server's repositories, resolved lazily by name from the configured repos_root, plus the shared stores
 _repos_root: Path | None = None
+_metadata_store: metadata_store.ServerMetadataStore | None = None
+_object_store: object_store.ObjectStore | None = None
 _repositories: dict[str, Repository] = {}
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def configure(server_config: config.ServerConfig) -> None:
-    global _repos_root
+    global _repos_root, _metadata_store, _object_store
     _repos_root = server_config.repos_root
+    if _metadata_store is not None:
+        _metadata_store.close()
+    _metadata_store = metadata_store.SqliteMetadataStore(server_config.db_path)
+    _object_store = object_store.ObjectStore(server_config.object_store_root)
     _repositories.clear()
 
 
@@ -240,15 +250,34 @@ def _require_repos_root() -> Path:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def _require_metadata_store() -> metadata_store.ServerMetadataStore:
+    if _metadata_store is None:
+        raise RuntimeError("bearpond server is not configured — set BEARPOND_CONFIG_DIR before startup")
+    return _metadata_store
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def _require_object_store() -> object_store.ObjectStore:
+    if _object_store is None:
+        raise RuntimeError("bearpond server is not configured — set BEARPOND_CONFIG_DIR before startup")
+    return _object_store
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def _repo_view(name: str) -> metadata_store.MetadataStore:
+    return metadata_store.RepoMetadataStoreView(name, _require_metadata_store())
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def get_repository(name: str) -> Repository:
-    repos_root: Path = _require_repos_root()
+    _require_repos_root()
     if name not in _repositories:
         if not _REPO_NAME.match(name):
             raise RepositoryNotFoundError(f"invalid repository name: {name}")
-        repo_dir: Path = repos_root / name
+        repo_dir: Path = _repos_root / name
         if not repo_dir.is_dir():
             raise RepositoryNotFoundError(f"unknown repository: {name}")
-        _repositories[name] = Repository(repo_dir)
+        _repositories[name] = Repository(name, repo_dir, _repo_view(name), _require_object_store())
     return _repositories[name]
 
 
@@ -261,17 +290,26 @@ def create_repository(name: str) -> Repository:
     if repo_dir.exists():
         raise RepositoryExistsError(f"repository already exists: {name}")
     repo_dir.mkdir(parents=True)
-    _repositories[name] = Repository(repo_dir)
+    _require_metadata_store().register_repo(name)
+    _repositories[name] = Repository(name, repo_dir, _repo_view(name), _require_object_store())
     return _repositories[name]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def list_repositories() -> list[str]:
-    repos_root: Path = _require_repos_root()
-    repos: list[str] = []
-    if repos_root.is_dir():
-        repos = sorted(p.name for p in repos_root.iterdir() if p.is_dir())
-    return repos
+    _require_repos_root()
+    store: metadata_store.ServerMetadataStore = _require_metadata_store()
+    return store.list_repos()
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def close() -> None:
+    global _metadata_store, _object_store
+    _repositories.clear()
+    if _metadata_store is not None:
+        _metadata_store.close()
+        _metadata_store = None
+    _object_store = None
 
 
 # auto-configure from BEARPOND_CONFIG_DIR so importing this module is enough to get a working registry in the
