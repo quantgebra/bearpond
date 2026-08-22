@@ -147,6 +147,7 @@ def test_commit_hash_is_self_certifying(repo: repository.Repository) -> None:
         record.committed_at,
         record.added,
         record.removed,
+        record.updated,
         record.user,
         record.reason,
     )
@@ -158,9 +159,12 @@ def test_commit_hash_ignores_added_and_removed_order() -> None:
     # the lists are semantically sets — the same change in a different order must hash identically
     added: list[types.FileMetadata] = [conftest.file_meta(PATH_A, CONTENT_A), conftest.file_meta(PATH_B, CONTENT_B)]
     removed: list[types.FileMetadata] = [conftest.file_meta("year=2023/x.parquet", b"x"), conftest.file_meta("year=2023/y.parquet", b"y")]
+    updated: list[types.UpdatedFileMetadata] = []
 
-    forward: str = metadata_store.compute_commit_hash(None, 1, "2026-01-01T00:00:00+00:00", added, removed, None, None)
+    forward: str = metadata_store.compute_commit_hash(
+        None, 1, "2026-01-01T00:00:00+00:00", added, removed, updated, None, None
+    )
     shuffled: str = metadata_store.compute_commit_hash(
-        None, 1, "2026-01-01T00:00:00+00:00", list(reversed(added)), list(reversed(removed)), None, None
+        None, 1, "2026-01-01T00:00:00+00:00", list(reversed(added)), list(reversed(removed)), list(reversed(updated)), None, None
     )
     assert forward == shuffled

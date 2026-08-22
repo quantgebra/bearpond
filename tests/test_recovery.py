@@ -49,8 +49,8 @@ def test_record_commit_is_idempotent_by_txn_uuid(repo: repository.Repository) ->
     txn: transaction.Transaction = begin_uploaded_txn(repo, {HIVE_PATH: CONTENT})
     declared: dict[str, transaction.FileMeta] = txn.load_declared()
 
-    first: types.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {})
-    second: types.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {})
+    first: types.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {}, {})
+    second: types.CommitRecord = repo.record_commit(txn.txn_uuid, declared, {}, {})
 
     assert second == first
     assert repo.metadata_store.get_current_seq() == 1

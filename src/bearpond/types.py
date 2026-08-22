@@ -33,9 +33,21 @@ class FileMetadata(BaseModel):
 
 
 # ======================================================================================================================
+# an update replaces the content at an existing path. Both the old and new metadata are recorded so the commit is
+# self-describing and the server can verify the update against the exact content the client observed.
+class UpdatedFileMetadata(BaseModel):
+    path: str
+    old_size: int
+    old_sha256: str
+    new_size: int
+    new_sha256: str
+
+
+# ======================================================================================================================
 class TransactionManifest(BaseModel):
     added: list[FileMetadata] = []
     removed: list[FileMetadata] = []
+    updated: list[UpdatedFileMetadata] = []
 
 
 # ======================================================================================================================
@@ -43,6 +55,7 @@ class BeginTransactionResponse(BaseModel):
     txn_uuid: str
     added_files: list[str]
     removed_files: list[str]
+    updated_files: list[str]
 
 
 # ======================================================================================================================
@@ -56,6 +69,7 @@ class CommitResponse(BaseModel):
     seq: int
     files_added_count: int
     files_removed_count: int
+    files_updated_count: int
 
 
 # ======================================================================================================================
@@ -74,8 +88,8 @@ class Manifest(BaseModel):
 
 # ======================================================================================================================
 # one record per commit, kept forever — the full history of how the lake reached its current state. The full
-# FileMetadata of every added/removed path is included (not just the paths) so a metadata store can be rebuilt
-# from these records alone if the database is ever lost or corrupted.
+# FileMetadata of every added/removed path and UpdatedFileMetadata of every updated path is included (not just the
+# paths) so a metadata store can be rebuilt from these records alone if the database is ever lost or corrupted.
 #
 # commit_hash is the record's content address, git-style: a hash over the change, its position in history
 # (parent_commit_hash + seq), when, by whom, and why — making every record self-certifying and the chain of
@@ -89,6 +103,7 @@ class CommitRecord(BaseModel):
     committed_at: str
     added: list[FileMetadata]
     removed: list[FileMetadata]
+    updated: list[UpdatedFileMetadata]
     user: str | None
     reason: str | None
 

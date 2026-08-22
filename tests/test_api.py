@@ -8,6 +8,7 @@ from bearpond.server import repository
 
 HIVE_PATH = "year=2024/month=01/part.parquet"
 CONTENT = b"fake parquet bytes"
+OTHER_CONTENT = b"updated parquet bytes"
 
 
 # ======================================================================================================================
@@ -62,7 +63,7 @@ def test_upload_with_wrong_content_is_400(api: httpx.Client) -> None:
 # ----------------------------------------------------------------------------------------------------------------------
 def test_full_write_read_flow_over_http(api: httpx.Client) -> None:
     body: dict = commit_via_api(api, HIVE_PATH, CONTENT)
-    assert body == {"seq": 1, "files_added_count": 1, "files_removed_count": 0}
+    assert body == {"seq": 1, "files_added_count": 1, "files_removed_count": 0, "files_updated_count": 0}
 
     manifest: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/manifest")
     assert manifest.status_code == 200
@@ -208,3 +209,58 @@ def test_manifest_is_served_from_the_store_not_the_exports(api: httpx.Client, re
     response: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/manifest")
     assert response.status_code == 200
     assert [f["path"] for f in response.json()["files"]] == [HIVE_PATH]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_manifest_by_seq_returns_that_version(api: httpx.Client) -> None:
+    commit_via_api(api, HIVE_PATH, CONTENT)
+    commit_via_api(api, "year=2024/month=03/extra.parquet", b"extra")
+
+    first: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/manifest", params={"seq": 1})
+    assert first.status_code == 200
+    assert [f["path"] for f in first.json()["files"]] == [HIVE_PATH]
+
+    second: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/manifest", params={"seq": 2})
+    assert second.status_code == 200
+    assert sorted(f["path"] for f in second.json()["files"]) == [HIVE_PATH, "year=2024/month=03/extra.parquet"]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_manifest_by_unknown_seq_is_404(api: httpx.Client) -> None:
+    commit_via_api(api, HIVE_PATH, CONTENT)
+    assert api.get(f"/repos/{conftest.REPO_NAME}/manifest", params={"seq": 99}).status_code == 404
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_update_over_http(api: httpx.Client) -> None:
+    commit_via_api(api, HIVE_PATH, CONTENT)
+
+    updated_meta: dict = {
+        "path": HIVE_PATH,
+        "old_size": len(CONTENT),
+        "old_sha256": conftest.sha256_hex(CONTENT),
+        "new_size": len(OTHER_CONTENT),
+        "new_sha256": conftest.sha256_hex(OTHER_CONTENT),
+    }
+    begin: httpx.Response = api.post(
+        f"/repos/{conftest.REPO_NAME}/transactions", json={"added": [], "removed": [], "updated": [updated_meta]}
+    )
+    assert begin.status_code == 200, begin.text
+    txn_uuid: str = begin.json()["txn_uuid"]
+    assert begin.json()["updated_files"] == [HIVE_PATH]
+
+    upload: httpx.Response = api.put(
+        f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/files/{HIVE_PATH}", content=OTHER_CONTENT
+    )
+    assert upload.status_code == 200, upload.text
+
+    commit: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit")
+    assert commit.status_code == 200, commit.text
+    assert commit.json() == {"seq": 2, "files_added_count": 0, "files_removed_count": 0, "files_updated_count": 1}
+
+    manifest: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/manifest")
+    assert manifest.status_code == 200
+    files: list[dict] = manifest.json()["files"]
+    assert len(files) == 1
+    assert files[0]["path"] == HIVE_PATH
+    assert files[0]["sha256"] == conftest.sha256_hex(OTHER_CONTENT)

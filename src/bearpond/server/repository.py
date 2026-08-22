@@ -75,6 +75,7 @@ class Repository:
         txn_uuid: str,
         declared: dict[str, transaction.FileMeta],
         removed: dict[str, transaction.FileMeta],
+        updated: dict[str, types.UpdatedFileMetadata],
         user: str | None = None,
         reason: str | None = None,
     ) -> types.CommitRecord:
@@ -85,6 +86,7 @@ class Repository:
                 txn_uuid,
                 added=[types.FileMetadata(path=p, size=m.size, sha256=m.sha256) for p, m in declared.items()],
                 removed=[types.FileMetadata(path=p, size=m.size, sha256=m.sha256) for p, m in removed.items()],
+                updated=list(updated.values()),
                 user=user,
                 reason=reason,
             )
@@ -102,9 +104,9 @@ class Repository:
 
     # ------------------------------------------------------------------------------------------------------------------
     def begin_transaction(self, manifest: types.TransactionManifest) -> transaction.Transaction:
-        # a transaction that neither adds nor removes anything isn't meaningful
-        if not manifest.added and not manifest.removed:
-            raise transaction.TransactionValidationError("transaction must add or remove at least one file")
+        # a transaction that neither adds nor removes nor updates anything isn't meaningful
+        if not manifest.added and not manifest.removed and not manifest.updated:
+            raise transaction.TransactionValidationError("transaction must add, remove, or update at least one file")
 
         # build the declared set, rejecting a path named more than once in the same manifest
         declared: dict[str, transaction.FileMeta] = {}
@@ -121,10 +123,27 @@ class Repository:
                 raise transaction.TransactionValidationError(f"path removed more than once: {removed_file.path}")
             removed[removed_file.path] = transaction.FileMeta(size=removed_file.size, sha256=removed_file.sha256)
 
-        # a path can't be both a new file this transaction adds and one it removes
-        overlap: set = set(declared) & set(removed)
-        if overlap:
-            raise transaction.TransactionValidationError(f"paths cannot be both added and removed: {sorted(overlap)}")
+        # build the updated set, rejecting a path named more than once in the same manifest
+        updated: dict[str, types.UpdatedFileMetadata] = {}
+        for updated_file in manifest.updated:
+            self._validate_hive_parquet_path(updated_file.path)
+            if updated_file.path in updated:
+                raise transaction.TransactionValidationError(f"path updated more than once: {updated_file.path}")
+            updated[updated_file.path] = updated_file
+
+        # a path can only play one role in a single transaction
+        for overlap_path in set(declared) & set(removed):
+            raise transaction.TransactionValidationError(
+                f"path cannot be both added and removed: {overlap_path}"
+            )
+        for overlap_path in set(declared) & set(updated):
+            raise transaction.TransactionValidationError(
+                f"path cannot be both added and updated: {overlap_path}"
+            )
+        for overlap_path in set(removed) & set(updated):
+            raise transaction.TransactionValidationError(
+                f"path cannot be both removed and updated: {overlap_path}"
+            )
 
         # fail-fast checks against the current mapping — the real guarantees are re-checked atomically at commit
         # time inside the store; these just save a client from uploading bytes for a transaction that can't commit
@@ -145,11 +164,26 @@ class Repository:
                 if existing.sha256 != meta.sha256:
                     raise transaction.TransactionConflictError(
                         f"{rel_path} already exists in the lake with different content — "
-                        f"modifying an existing file is only allowed via compaction"
+                        f"remove it before adding new content"
                     )
                 # re-adding identical content would change nothing — a no-op commit is a client bug, not a success
                 raise transaction.TransactionConflictError(
                     f"{rel_path} already exists in the lake with identical content — re-adding it is a no-op"
+                )
+        for rel_path, meta in updated.items():
+            current: types.FileMetadata | None = self.metadata_store.get_file_metadata(rel_path)
+            if current is None:
+                raise transaction.TransactionValidationError(
+                    f"cannot update a path that doesn't exist in the lake: {rel_path}"
+                )
+            if current.sha256 != meta.old_sha256:
+                raise transaction.TransactionConflictError(
+                    f"{rel_path} has changed since it was declared for update — update is only safe against the "
+                    f"exact content that was observed"
+                )
+            if meta.old_sha256 == meta.new_sha256:
+                raise transaction.TransactionValidationError(
+                    f"{rel_path} old and new content are identical — updating it is a no-op"
                 )
 
         # only create the transaction's staging directory once everything above has passed validation
@@ -157,6 +191,7 @@ class Repository:
         txn.txn_dir.mkdir(parents=True)
         txn.save_declared(declared)
         txn.save_removed(removed)
+        txn.save_updated(updated)
         return txn
 
     # ------------------------------------------------------------------------------------------------------------------

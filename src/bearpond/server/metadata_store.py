@@ -13,6 +13,9 @@ from .. import types
 # validates/serializes the added/removed FileMetadata lists stored as JSON text in the commits table
 _file_meta_list_adapter: TypeAdapter[list[types.FileMetadata]] = TypeAdapter(list[types.FileMetadata])
 
+# validates/serializes the updated UpdatedFileMetadata list stored as JSON text in the commits table
+_updated_meta_list_adapter: TypeAdapter[list[types.UpdatedFileMetadata]] = TypeAdapter(list[types.UpdatedFileMetadata])
+
 
 # ======================================================================================================================
 class MetadataStoreError(Exception):
@@ -32,18 +35,20 @@ def compute_commit_hash(
     committed_at: str,
     added: list[types.FileMetadata],
     removed: list[types.FileMetadata],
+    updated: list[types.UpdatedFileMetadata],
     user: str | None,
     reason: str | None,
 ) -> str:
     # fixed field order and compact separators make the hash reproducible from the exported record alone.
-    # added/removed are sorted by path before serializing — they're semantically sets, and the hash must depend
-    # only on the change's content, never on list order (same reason git stores tree entries sorted by name)
+    # added/removed/updated are sorted by path before serializing — they're semantically sets, and the hash must
+    # depend only on the change's content, never on list order (same reason git stores tree entries sorted by name)
     payload: dict = {
         "parent_commit_hash": parent_commit_hash,
         "seq": seq,
         "committed_at": committed_at,
         "added": [f.model_dump() for f in sorted(added, key=lambda f: f.path)],
         "removed": [f.model_dump() for f in sorted(removed, key=lambda f: f.path)],
+        "updated": [f.model_dump() for f in sorted(updated, key=lambda f: f.path)],
         "user": user,
         "reason": reason,
     }
@@ -86,6 +91,7 @@ class MetadataStore(Protocol):
         txn_uuid: str,
         added: list[types.FileMetadata],
         removed: list[types.FileMetadata],
+        updated: list[types.UpdatedFileMetadata],
         user: str | None = None,
         reason: str | None = None,
     ) -> types.CommitRecord: ...
@@ -131,6 +137,7 @@ class SqliteMetadataStore(MetadataStore):
         committed_at TEXT NOT NULL,
         added TEXT NOT NULL,
         removed TEXT NOT NULL,
+        updated TEXT NOT NULL,
         user TEXT,
         reason TEXT
     );
@@ -140,7 +147,7 @@ class SqliteMetadataStore(MetadataStore):
     @staticmethod
     def _row_to_commit_record(row: tuple) -> types.CommitRecord:
         # row columns arrive in the same order the model declares them: commit_hash, parent_commit_hash, txn_uuid,
-        # seq, committed_at, added, removed, user, reason
+        # seq, committed_at, added, removed, updated, user, reason
         return types.CommitRecord(
             commit_hash=row[0],
             parent_commit_hash=row[1],
@@ -149,8 +156,9 @@ class SqliteMetadataStore(MetadataStore):
             committed_at=row[4],
             added=_file_meta_list_adapter.validate_json(row[5]),
             removed=_file_meta_list_adapter.validate_json(row[6]),
-            user=row[7],
-            reason=row[8],
+            updated=_updated_meta_list_adapter.validate_json(row[7]),
+            user=row[8],
+            reason=row[9],
         )
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -165,7 +173,17 @@ class SqliteMetadataStore(MetadataStore):
         # we need to synchronize execution of the initial schema creation
         with self._lock:
             self._conn.executescript(self._SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def _migrate(self) -> None:
+        # older databases may be missing columns added after the initial schema; ALTER TABLE brings them in line
+        with self._lock:
+            columns: list[tuple] = self._conn.execute("PRAGMA table_info(commits)").fetchall()
+            if not any(col[1] == "updated" for col in columns):
+                self._conn.execute("ALTER TABLE commits ADD COLUMN updated TEXT NOT NULL DEFAULT '[]'")
+                self._conn.commit()
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_file_metadata(self, path: str) -> types.FileMetadata | None:
@@ -249,7 +267,7 @@ class SqliteMetadataStore(MetadataStore):
     def get_commit_record(self, txn_uuid: str) -> types.CommitRecord | None:
         with self._lock:
             row: tuple | None = self._conn.execute(
-                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason "
+                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason "
                 "FROM commits WHERE txn_uuid = ?",
                 (txn_uuid,),
             ).fetchone()
@@ -264,6 +282,7 @@ class SqliteMetadataStore(MetadataStore):
         txn_uuid: str,
         added: list[types.FileMetadata],
         removed: list[types.FileMetadata],
+        updated: list[types.UpdatedFileMetadata],
         user: str | None = None,
         reason: str | None = None,
     ) -> types.CommitRecord:
@@ -287,14 +306,25 @@ class SqliteMetadataStore(MetadataStore):
                         ).fetchall()
                     }
 
-                    # an added path must not be live at all — different content is a modification conflict, identical
+                    # a path can only be in one of added, removed, or updated within a single commit
+                    added_paths: set[str] = {f.path for f in added}
+                    removed_paths: set[str] = {f.path for f in removed}
+                    updated_paths: set[str] = {f.path for f in updated}
+                    for path in added_paths & removed_paths:
+                        raise MetadataConflictError(f"path cannot be both added and removed: {path}")
+                    for path in added_paths & updated_paths:
+                        raise MetadataConflictError(f"path cannot be both added and updated: {path}")
+                    for path in removed_paths & updated_paths:
+                        raise MetadataConflictError(f"path cannot be both removed and updated: {path}")
+
+                    # an added path must not be live at all — different content requires a remove first, identical
                     # content is a no-op, and both are rejected: every recorded commit changes the lake by construction
                     for added_file in added:
                         if added_file.path in current:
                             if current[added_file.path].sha256 != added_file.sha256:
                                 raise MetadataConflictError(
                                     f"{added_file.path} already exists in the lake with different content — "
-                                    f"modifying an existing file is only allowed via compaction"
+                                    f"remove it before adding new content"
                                 )
                             raise MetadataConflictError(
                                 f"{added_file.path} already exists in the lake with identical content — "
@@ -311,6 +341,21 @@ class SqliteMetadataStore(MetadataStore):
                                 f"remove is only safe against the exact content that was observed"
                             )
 
+                    # an update is only safe against the exact content the client observed, and the new content must
+                    # actually be different — otherwise the commit would be a no-op
+                    for updated_file in updated:
+                        if updated_file.path not in current:
+                            raise MetadataConflictError(f"path to update no longer exists: {updated_file.path}")
+                        if current[updated_file.path].sha256 != updated_file.old_sha256:
+                            raise MetadataConflictError(
+                                f"{updated_file.path} has changed since it was declared for update — "
+                                f"update is only safe against the exact content that was observed"
+                            )
+                        if updated_file.old_sha256 == updated_file.new_sha256:
+                            raise MetadataConflictError(
+                                f"{updated_file.path} old and new content are identical — updating it is a no-op"
+                            )
+
                     # the checks above guarantee this commit changes the mapping, so the seq always advances
                     seq: int = self._conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM commits").fetchone()[0]
 
@@ -320,7 +365,7 @@ class SqliteMetadataStore(MetadataStore):
                     ).fetchone()
                     parent_commit_hash: str | None = parent_row[0] if parent_row is not None else None
                     commit_hash: str = compute_commit_hash(
-                        parent_commit_hash, seq, committed_at, added, removed, user, reason
+                        parent_commit_hash, seq, committed_at, added, removed, updated, user, reason
                     )
 
                     for added_file in added:
@@ -335,10 +380,23 @@ class SqliteMetadataStore(MetadataStore):
                             "WHERE path = ? AND removed_seq IS NULL",
                             (txn_uuid, seq, removed_file.path),
                         )
+                    for updated_file in updated:
+                        # mark the old content's row as removed and insert a new live row for the replacement content,
+                        # preserving the full history of the path
+                        self._conn.execute(
+                            "UPDATE objects SET removed_txn = ?, removed_seq = ? "
+                            "WHERE path = ? AND removed_seq IS NULL",
+                            (txn_uuid, seq, updated_file.path),
+                        )
+                        self._conn.execute(
+                            "INSERT INTO objects (path, size, sha256, added_txn, added_seq) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (updated_file.path, updated_file.new_size, updated_file.new_sha256, txn_uuid, seq),
+                        )
                     self._conn.execute(
                         "INSERT INTO commits "
-                        "(commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "(commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             commit_hash,
                             parent_commit_hash,
@@ -347,6 +405,7 @@ class SqliteMetadataStore(MetadataStore):
                             committed_at,
                             _file_meta_list_adapter.dump_json(added).decode(),
                             _file_meta_list_adapter.dump_json(removed).decode(),
+                            _updated_meta_list_adapter.dump_json(updated).decode(),
                             user,
                             reason,
                         ),
@@ -364,6 +423,7 @@ class SqliteMetadataStore(MetadataStore):
                     committed_at=committed_at,
                     added=added,
                     removed=removed,
+                    updated=updated,
                     user=user,
                     reason=reason,
                 )
@@ -373,7 +433,7 @@ class SqliteMetadataStore(MetadataStore):
     def get_commit_record_list(self) -> list[types.CommitRecord]:
         with self._lock:
             rows: list[tuple] = self._conn.execute(
-                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason "
+                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason "
                 "FROM commits ORDER BY seq, committed_at"
             ).fetchall()
         return [self._row_to_commit_record(row) for row in rows]
@@ -383,7 +443,7 @@ class SqliteMetadataStore(MetadataStore):
         # newest-first history, keyset-paginated by seq — one extra row beyond the limit marks truncation
         with self._lock:
             rows: list[tuple] = self._conn.execute(
-                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, user, reason "
+                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason "
                 "FROM commits WHERE (? IS NULL OR seq < ?) ORDER BY seq DESC LIMIT ?",
                 (before_seq, before_seq, limit + 1),
             ).fetchall()

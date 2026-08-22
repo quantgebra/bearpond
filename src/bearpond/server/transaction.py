@@ -54,6 +54,9 @@ class FileMeta(BaseModel):
 # adapter to validate/serialize the dict[str, FileMeta] shape shared by _declared.json, _removed.json, and _uploaded.json
 _file_meta_adapter: TypeAdapter[dict[str, FileMeta]] = TypeAdapter(dict[str, FileMeta])
 
+# adapter to validate/serialize the dict[str, UpdatedFileMetadata] shape used by _updated.json
+_updated_meta_adapter: TypeAdapter[dict[str, types.UpdatedFileMetadata]] = TypeAdapter(dict[str, types.UpdatedFileMetadata])
+
 
 # ======================================================================================================================
 class Transaction:
@@ -91,6 +94,19 @@ class Transaction:
         utils.atomic_write(state_path, _file_meta_adapter.dump_json(state))
 
     # ------------------------------------------------------------------------------------------------------------------
+    def load_updated(self) -> dict[str, types.UpdatedFileMetadata]:
+        state_path: Path = self.txn_dir / "_updated.json"
+        state: dict[str, types.UpdatedFileMetadata] = {}
+        if state_path.exists():
+            state = _updated_meta_adapter.validate_json(state_path.read_text())
+        return state
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def save_updated(self, state: dict[str, types.UpdatedFileMetadata]) -> None:
+        state_path: Path = self.txn_dir / "_updated.json"
+        utils.atomic_write(state_path, _updated_meta_adapter.dump_json(state))
+
+    # ------------------------------------------------------------------------------------------------------------------
     def load_uploaded(self) -> dict[str, FileMeta]:
         state_path: Path = self.txn_dir / "_uploaded.json"
         state: dict[str, FileMeta] = {}
@@ -105,12 +121,15 @@ class Transaction:
 
     # ------------------------------------------------------------------------------------------------------------------
     async def upload_file(self, rel_path: str, chunks: AsyncIterator[bytes]) -> types.FileMetadata:
-        # only files in the original transaction manifest can be uploaded
+        # only files declared as added or updated in the original transaction manifest can be uploaded
         declared: dict[str, FileMeta] = self.load_declared()
-        if rel_path not in declared:
+        updated: dict[str, types.UpdatedFileMetadata] = self.load_updated()
+        if rel_path in declared:
+            expected_sha256: str = declared[rel_path].sha256
+        elif rel_path in updated:
+            expected_sha256 = updated[rel_path].new_sha256
+        else:
             raise TransactionValidationError(f"path was not declared when the transaction was opened: {rel_path}")
-
-        expected_sha256: str = declared[rel_path].sha256
 
         # stage inside the transaction's own directory — nothing is visible to readers until commit()
         dest_path: Path = utils.safe_join(self.txn_dir, rel_path)
@@ -155,9 +174,11 @@ class Transaction:
         declared: dict[str, FileMeta] = self.load_declared()
         uploaded: dict[str, FileMeta] = self.load_uploaded()
         removed: dict[str, FileMeta] = self.load_removed()
+        updated: dict[str, types.UpdatedFileMetadata] = self.load_updated()
 
         # refuse to commit while any declared file hasn't actually been uploaded yet
-        missing: set = set(declared) - set(uploaded)
+        required_uploads: set[str] = set(declared) | set(updated)
+        missing: set[str] = required_uploads - set(uploaded)
         if missing:
             raise TransactionValidationError(f"declared files not yet uploaded: {sorted(missing)}")
 
@@ -170,21 +191,29 @@ class Transaction:
                     self.repo.object_store.insert(meta.sha256, self.txn_dir / rel_path)
                 except object_store.ObjectStoreError as e:
                     raise TransactionConflictError(f"cannot place {rel_path}: {e}") from e
+            for rel_path, meta in updated.items():
+                try:
+                    self.repo.object_store.insert(meta.new_sha256, self.txn_dir / rel_path)
+                except object_store.ObjectStoreError as e:
+                    raise TransactionConflictError(f"cannot place {rel_path}: {e}") from e
 
             # the commit point: one atomic metadata transaction flips every pointer — collision and removal
             # checks happen inside it, so check-and-act can never race. Idempotent by txn_uuid, so a client that
             # lost the response can safely retry.
-            record: types.CommitRecord = self.repo.record_commit(self.txn_uuid, declared, removed, reason=reason)
+            record: types.CommitRecord = self.repo.record_commit(
+                self.txn_uuid, declared, removed, updated, reason=reason
+            )
 
             # the staging directory has served its purpose
             if self.txn_dir.exists():
                 shutil.rmtree(self.txn_dir)
 
-        # report the manifest version this commit produced and how many files were added/removed
+        # report the manifest version this commit produced and how many files were added/removed/updated
         return types.CommitResponse(
             seq=record.seq,
             files_added_count=len(declared),
             files_removed_count=len(removed),
+            files_updated_count=len(updated),
         )
 
     # ------------------------------------------------------------------------------------------------------------------

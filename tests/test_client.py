@@ -50,6 +50,16 @@ def commit_source_dir(client: server_client.ServerClient, source_dir: Path) -> t
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def commit_file(client: server_client.ServerClient, source_dir: Path, rel_path: str) -> types.CommitResponse:
+    # drives a single file through the full write lifecycle as its own commit
+    files: dict[str, Path] = {rel_path: source_dir / rel_path}
+    declared: list[types.FileMetadata] = client.declare_files(files)
+    txn_uuid: str = client.begin_transaction(declared)
+    client.upload_files(txn_uuid, files)
+    return client.commit(txn_uuid)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_get_manifest_on_empty_lake(client: server_client.ServerClient) -> None:
     manifest: types.Manifest = client.get_manifest()
     assert manifest.seq == 0
@@ -257,7 +267,7 @@ def test_get_commit_history_and_cli_log(
     out: str = capsys.readouterr().out
     assert "manifest-00000001" in out
     assert "first trades" in out
-    assert "+1 -0 file(s)" in out
+    assert "+1 -0 ~0 file(s)" in out
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -328,3 +338,217 @@ def test_pull_resumes_from_pending_after_interruption(
     assert final["seq"] == 1
     assert not (target / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).exists()
     assert (target / PATH_B).read_bytes() == CONTENT_B
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_get_manifest_by_seq(client: server_client.ServerClient, source_dir: Path) -> None:
+    commit_file(client, source_dir, PATH_A)
+    commit_file(client, source_dir, PATH_B)
+
+    first: types.Manifest = client.get_manifest(seq=1)
+    assert [f.path for f in first.files] == [PATH_A]
+
+    second: types.Manifest = client.get_manifest(seq=2)
+    assert [f.path for f in second.files] == [PATH_A, PATH_B]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_pull_to_specific_seq_downloads_only_that_version(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    commit_file(client, source_dir, PATH_A)
+    commit_file(client, source_dir, PATH_B)
+
+    target: Path = tmp_path / "mirror"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
+    workspace.pull(client, seq=1)
+
+    assert (target / PATH_A).read_bytes() == CONTENT_A
+    assert not (target / PATH_B).exists()
+    assert workspace.tracked_manifest().seq == 1
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_pull_to_specific_seq_prunes_files_from_a_newer_version(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    commit_file(client, source_dir, PATH_A)
+    commit_file(client, source_dir, PATH_B)
+
+    target: Path = tmp_path / "mirror"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
+    workspace.pull(client)
+    assert (target / PATH_B).exists()
+
+    workspace.pull(client, seq=1)
+    assert (target / PATH_A).read_bytes() == CONTENT_A
+    assert not (target / PATH_B).exists()
+    assert workspace.tracked_manifest().seq == 1
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_pull_to_specific_seq_refuses_with_pending_pull(
+    client: server_client.ServerClient,
+    source_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit_file(client, source_dir, PATH_A)
+    commit_file(client, source_dir, PATH_B)
+
+    target: Path = tmp_path / "mirror"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
+
+    original = client.download_file
+    calls: list[str] = []
+
+    def fail_after_first(rel_path: str, dest_path: Path) -> str:
+        if calls:
+            raise server_client.BearpondError("boom")
+        calls.append(rel_path)
+        return original(rel_path, dest_path)
+
+    monkeypatch.setattr(client, "download_file", fail_after_first)
+    with pytest.raises(server_client.BearpondError, match="boom"):
+        workspace.pull(client)
+
+    monkeypatch.setattr(client, "download_file", original)
+    with pytest.raises(server_client.BearpondError, match="interrupted pull"):
+        workspace.pull(client, seq=1)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_cli_pull_with_seq(
+    client: server_client.ServerClient,
+    source_dir: Path,
+    live_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit_file(client, source_dir, PATH_A)
+    commit_file(client, source_dir, PATH_B)
+
+    workdir: Path = tmp_path / "ws"
+    bearpond_client.BearpondClient.clone(live_server, conftest.REPO_NAME, workdir)
+
+    monkeypatch.chdir(workdir)
+    cli.cmd_pull(argparse.Namespace(token=None, dry_run=False, seq=1))
+
+    assert (workdir / PATH_A).read_bytes() == CONTENT_A
+    assert not (workdir / PATH_B).exists()
+    assert bearpond_client.BearpondClient(workdir).tracked_manifest().seq == 1
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_add_on_tracked_file_stages_update(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(source_dir)
+    workspace.add([source_dir / PATH_A, source_dir / PATH_B])
+    workspace.commit(client, message="initial")
+
+    # change PATH_A on disk and re-add it — this should stage an update, not a conflicting add
+    new_content: bytes = b"updated alpha parquet bytes"
+    (source_dir / PATH_A).write_bytes(new_content)
+    workspace.add([source_dir / PATH_A])
+
+    status: bearpond_client.WorkspaceStatus = workspace.status()
+    assert len(status.staged_updated) == 1
+    assert status.staged_updated[0].path == PATH_A
+    assert status.staged_updated[0].new_sha256 == conftest.sha256_hex(new_content)
+    assert not status.staged_added
+    assert not status.staged_removed
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_commit_update_replaces_file_on_server(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(source_dir)
+    workspace.add([source_dir / PATH_A, source_dir / PATH_B])
+    workspace.commit(client, message="initial")
+
+    new_content: bytes = b"updated alpha parquet bytes"
+    (source_dir / PATH_A).write_bytes(new_content)
+    workspace.add([source_dir / PATH_A])
+
+    result: types.CommitResponse = workspace.commit(client, message="update alpha")
+    assert result.seq == 2
+    assert result.files_added_count == 0
+    assert result.files_removed_count == 0
+    assert result.files_updated_count == 1
+
+    manifest: types.Manifest = client.get_manifest()
+    assert [f.path for f in manifest.files] == [PATH_A, PATH_B]
+    manifest_by_path: dict[str, bearpond_client.FileState] = {f.path: bearpond_client.FileState(size=f.size, sha256=f.sha256) for f in manifest.files}
+    assert manifest_by_path[PATH_A].sha256 == conftest.sha256_hex(new_content)
+    assert manifest_by_path[PATH_B].sha256 == conftest.sha256_hex(CONTENT_B)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_status_does_not_show_modified_for_staged_update(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(source_dir)
+    workspace.add([source_dir / PATH_A, source_dir / PATH_B])
+    workspace.commit(client, message="initial")
+
+    (source_dir / PATH_A).write_bytes(b"updated alpha parquet bytes")
+    workspace.add([source_dir / PATH_A])
+
+    status: bearpond_client.WorkspaceStatus = workspace.status()
+    assert PATH_A not in status.modified
+    assert len(status.staged_updated) == 1
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_rm_cancels_pending_update(
+    client: server_client.ServerClient, source_dir: Path, tmp_path: Path
+) -> None:
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(source_dir)
+    workspace.add([source_dir / PATH_A, source_dir / PATH_B])
+    workspace.commit(client, message="initial")
+
+    (source_dir / PATH_A).write_bytes(b"updated alpha parquet bytes")
+    workspace.add([source_dir / PATH_A])
+    workspace.rm([source_dir / PATH_A])
+
+    status: bearpond_client.WorkspaceStatus = workspace.status()
+    assert not status.staged_updated
+    assert len(status.staged_removed) == 1
+    assert status.staged_removed[0].path == PATH_A
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_cli_update_flow(
+    client: server_client.ServerClient,
+    source_dir: Path,
+    live_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    # CLI commands need a cloned workspace with config.json, not a bare BearpondClient
+    workdir: Path = tmp_path / "ws"
+    bearpond_client.BearpondClient.clone(live_server, conftest.REPO_NAME, workdir)
+
+    # seed the repo by committing from the source directory, then pull the workspace up to date
+    seed: bearpond_client.BearpondClient = bearpond_client.BearpondClient(source_dir)
+    seed.add([source_dir / PATH_A, source_dir / PATH_B])
+    seed.commit(client, message="initial")
+
+    bearpond_client.BearpondClient(workdir).pull(client)
+
+    (workdir / PATH_A).write_bytes(b"updated alpha parquet bytes")
+
+    monkeypatch.chdir(workdir)
+    cli.cmd_add(argparse.Namespace(paths=[workdir / PATH_A]))
+    cli.cmd_status(argparse.Namespace())
+    out: str = capsys.readouterr().out
+    assert "staged update" in out
+
+    cli.cmd_commit(argparse.Namespace(token=None, message="update via cli"))
+    out = capsys.readouterr().out
+    assert "~1 file(s)" in out
+
+    assert bearpond_client.BearpondClient(workdir).tracked_manifest().seq == 2

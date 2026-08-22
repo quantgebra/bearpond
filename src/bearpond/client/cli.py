@@ -67,6 +67,8 @@ def cmd_status(args: argparse.Namespace) -> None:
         print(f"  staged add:    {path.path}")
     for path in status.staged_removed:
         print(f"  staged remove: {path.path}")
+    for path in status.staged_updated:
+        print(f"  staged update: {path.path}")
     for path in status.modified:
         print(f"  modified:      {path}")
     for path in status.untracked:
@@ -81,14 +83,17 @@ def cmd_commit(args: argparse.Namespace) -> None:
     client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
     with client.connect(token=args.token) as server:
         result: types.CommitResponse = client.commit(server, message=args.message)
-    print(f"Committed: manifest-{result.seq:08d}, +{result.files_added_count} -{result.files_removed_count} file(s)")
+    print(
+        f"Committed: manifest-{result.seq:08d}, "
+        f"+{result.files_added_count} -{result.files_removed_count} ~{result.files_updated_count} file(s)"
+    )
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_pull(args: argparse.Namespace) -> None:
     client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
     with client.connect(token=args.token) as server:
-        client.pull(server, dry_run=args.dry_run)
+        client.pull(server, dry_run=args.dry_run, seq=args.seq)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -102,7 +107,7 @@ def cmd_log(args: argparse.Namespace) -> None:
         print(f"commit {record.commit_hash[:12]}  manifest-{record.seq:08d}")
         print(f"Author: {author}    Date: {record.committed_at}")
         print(f"    {reason}")
-        print(f"    +{len(record.added)} -{len(record.removed)} file(s)")
+        print(f"    +{len(record.added)} -{len(record.removed)} ~{len(record.updated)} file(s)")
         print()
 
 
@@ -155,6 +160,7 @@ def main() -> None:
     )
     pull_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
     pull_parser.add_argument("--dry-run", action="store_true")
+    pull_parser.add_argument("--seq", type=int, default=None, help="Pull a specific manifest version instead of the latest")
     pull_parser.set_defaults(func=cmd_pull)
 
     log_parser: argparse.ArgumentParser = subparsers.add_parser(

@@ -194,3 +194,102 @@ def test_abort_clears_staging_dir(repo: repository.Repository) -> None:
     txn.abort()
     assert not txn.txn_dir.exists()
     assert not repo.object_store.contains_address(conftest.sha256_hex(CONTENT))
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def begin_update(
+    repo: repository.Repository, rel_path: str, old_content: bytes, new_content: bytes
+) -> transaction.Transaction:
+    manifest: types.TransactionManifest = types.TransactionManifest(
+        updated=[
+            types.UpdatedFileMetadata(
+                path=rel_path,
+                old_size=len(old_content),
+                old_sha256=conftest.sha256_hex(old_content),
+                new_size=len(new_content),
+                new_sha256=conftest.sha256_hex(new_content),
+            )
+        ]
+    )
+    return repo.begin_transaction(manifest)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_update_replaces_content_at_path(repo: repository.Repository) -> None:
+    add_and_commit(repo, HIVE_PATH, CONTENT)
+
+    txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, OTHER_CONTENT)
+    conftest.upload_bytes(txn, HIVE_PATH, OTHER_CONTENT)
+    result: types.CommitResponse = txn.commit()
+
+    assert result.seq == 2
+    assert result.files_added_count == 0
+    assert result.files_removed_count == 0
+    assert result.files_updated_count == 1
+
+    current: types.FileMetadata | None = repo.metadata_store.get_file_metadata(HIVE_PATH)
+    assert current is not None
+    assert current.sha256 == conftest.sha256_hex(OTHER_CONTENT)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_update_preserves_object_history(repo: repository.Repository) -> None:
+    add_and_commit(repo, HIVE_PATH, CONTENT)
+    txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, OTHER_CONTENT)
+    conftest.upload_bytes(txn, HIVE_PATH, OTHER_CONTENT)
+    txn.commit()
+
+    # both the old and new content objects remain stored — the old row is marked removed, the new one is live
+    assert conftest.object_path(repo, CONTENT).read_bytes() == CONTENT
+    assert conftest.object_path(repo, OTHER_CONTENT).read_bytes() == OTHER_CONTENT
+
+    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    assert records[1].updated[0].old_sha256 == conftest.sha256_hex(CONTENT)
+    assert records[1].updated[0].new_sha256 == conftest.sha256_hex(OTHER_CONTENT)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_update_rejects_wrong_old_content_at_begin(repo: repository.Repository) -> None:
+    add_and_commit(repo, HIVE_PATH, CONTENT)
+
+    with pytest.raises(transaction.TransactionConflictError, match="has changed since it was declared for update"):
+        begin_update(repo, HIVE_PATH, OTHER_CONTENT, b"new")
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_update_rejects_missing_path_at_begin(repo: repository.Repository) -> None:
+    with pytest.raises(transaction.TransactionValidationError, match="cannot update a path that doesn't exist"):
+        begin_update(repo, HIVE_PATH, CONTENT, OTHER_CONTENT)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_update_rejects_concurrent_change_at_commit(repo: repository.Repository) -> None:
+    add_and_commit(repo, HIVE_PATH, CONTENT)
+
+    txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, OTHER_CONTENT)
+    conftest.upload_bytes(txn, HIVE_PATH, OTHER_CONTENT)
+
+    # another transaction changes the path before this one commits
+    interloper_txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, b"interloper")
+    conftest.upload_bytes(interloper_txn, HIVE_PATH, b"interloper")
+    interloper_txn.commit()
+
+    with pytest.raises(transaction.TransactionConflictError, match="has changed since it was declared for update"):
+        txn.commit()
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_update_rejects_identical_content(repo: repository.Repository) -> None:
+    add_and_commit(repo, HIVE_PATH, CONTENT)
+
+    with pytest.raises(transaction.TransactionValidationError, match="old and new content are identical"):
+        begin_update(repo, HIVE_PATH, CONTENT, CONTENT)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_update_upload_uses_new_sha256(repo: repository.Repository) -> None:
+    add_and_commit(repo, HIVE_PATH, CONTENT)
+
+    txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, OTHER_CONTENT)
+    with pytest.raises(transaction.TransactionValidationError, match="sha256 mismatch"):
+        conftest.upload_bytes(txn, HIVE_PATH, CONTENT)

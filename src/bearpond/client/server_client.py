@@ -109,11 +109,14 @@ class ServerClient:
     # --- reads -----------------------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_manifest(self) -> types.Manifest:
-        response: httpx.Response = self._client.get(f"{self._base}/manifest", headers=self._headers())
+    def get_manifest(self, seq: int | None = None) -> types.Manifest:
+        params: dict[str, int] = {}
+        if seq is not None:
+            params["seq"] = seq
+        response: httpx.Response = self._client.get(f"{self._base}/manifest", params=params, headers=self._headers())
 
         manifest: types.Manifest
-        if response.status_code == 404:
+        if seq is None and response.status_code == 404:
             # nothing has ever been committed to this lake yet — a legitimate empty state, not an error
             manifest = types.Manifest(seq=0, created_at=None, files=[])
         else:
@@ -154,8 +157,15 @@ class ServerClient:
     # --- transaction lifecycle --------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------
-    def begin_transaction(self, added: list[types.FileMetadata], removed: list[types.FileMetadata] | None = None) -> str:
-        body: types.TransactionManifest = types.TransactionManifest(added=added, removed=removed or [])
+    def begin_transaction(
+        self,
+        added: list[types.FileMetadata],
+        removed: list[types.FileMetadata] | None = None,
+        updated: list[types.UpdatedFileMetadata] | None = None,
+    ) -> str:
+        body: types.TransactionManifest = types.TransactionManifest(
+            added=added, removed=removed or [], updated=updated or []
+        )
         response: httpx.Response = self._client.post(f"{self._base}/transactions", json=body.model_dump(), headers=self._headers())
         self._raise_for_status(response)
         result: types.BeginTransactionResponse = types.BeginTransactionResponse.model_validate_json(

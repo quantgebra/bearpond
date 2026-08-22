@@ -2,7 +2,16 @@
 
 A small, transactional data lake — a pond, really — where bears (pandas, Polars) come to play.
 
-bearpond is a data server and client for versioned collections of [Apache Parquet](https://parquet.apache.org/) files. It gives you the semantics of a [lakehouse](https://www.databricks.com/glossary/data-lakehouse) at single-machine scale: content-addressed storage, atomic commits, and point-in-time manifests — without running Spark, a metastore, or an object store.
+bearpond is a central data server and sync client for versioned collections of [Apache Parquet](https://parquet.apache.org/) files, built for teams. It gives you the semantics of a [lakehouse](https://www.databricks.com/glossary/data-lakehouse) without the lakehouse machinery.  Bearpond does include content-addressed storage, atomic commits, and point-in-time manifests from one server process, a directory, and SQLite — no Spark, no metastore, no object store.
+
+## Who it's for
+
+bearpond is built for a small team with central data: a handful of ETL processes writing, a handful of analysts and system processes reading. The archetype is a research/quant team that has outgrown the usual small-team plumbing — ETL jobs dropping files into S3, Dropbox syncing them out to analysts, naming conventions holding it all together — and wants correctness (atomicity, integrity, history) without adopting the Spark/Iceberg/object-store stack to get it. Think: daily bars for 10K equity symbols, intraday data for futures, crypto, and prediction markets, produced by a fleet of batch jobs and consumed from desks and notebooks.
+
+- **Writers** are batch processes making a handful of commits a day, each adding or removing whole files — yesterday's daily bars, the latest intraday partitions.
+- **Readers** run `bearpond pull` to maintain a verified local mirror in hive-partition layout, then query with pandas, Polars, DuckDB, or any Parquet reader. The mirror replaces the Dropbox share: incremental, content-verified, and always a complete, consistent version of the lake.
+
+**The sweet spot: coarse files, not fine ones.** bearpond addresses and transfers whole files and records the full file list in every commit, so it rewards few large Parquet files over many tiny ones. Prefer `date=2026-08-21/equities.parquet` — all symbols in one columnar file, filtered by symbol at query time, which DuckDB and Polars do trivially — over one file per symbol per day. A handful of commits a day, each touching hundreds of files at most, is the design center.
 
 ## What it does
 
@@ -12,6 +21,26 @@ bearpond is a data server and client for versioned collections of [Apache Parque
 - **Git-style commit chain.** Each commit record carries a `commit_hash` computed over the change, its parent, its timestamp, and its author — so the history is self-certifying and tamper-evident.
 - **Safe pull.** `bearpond pull` maintains a local mirror of the lake in hive-partition layout, fetching only what changed and pruning what was removed — ready for pandas, Polars, DuckDB, or any Parquet reader.
 - **Crash-safe by construction.** Immutable objects plus an atomic SQLite metadata commit mean a crash at any point leaves the lake either exactly on a version or cleanly retryable. Startup reconciles the exported manifests with the store automatically.
+
+## Why bearpond — and the alternatives
+
+The honest comparison for a small team centralizing its data:
+
+| Approach | Where it falls short for this use case |
+|---|---|
+| **S3 + Dropbox + conventions** (the usual status quo) | Readers can observe a half-written day; concurrent writers interleave silently; the sync tool mirrors bytes without knowing what a complete dataset looks like; no integrity checks, no history |
+| **S3 + DuckDB/pandas, queried in place** | No atomic multi-file commits and no versions; safe concurrent writers need a locking story you build yourself |
+| **Delta Lake (delta-rs)** | Table-format machinery you may not need; safe multi-writer on plain storage still requires external locking infrastructure |
+| **LakeFS** | The right semantics (git-for-data), but real operational weight — its own metadata store and gateway — aimed at object-store scale |
+| **Iceberg / DuckLake** | Table-oriented catalogs whose readers need engine/catalog support; more machinery than a versioned file collection needs |
+
+bearpond's side of the trade: atomic all-or-nothing commits across many files, loud 409 conflicts instead of silent corruption, content-verified mirrors, and a tamper-evident hash-chained history — from a single server process you can read end to end.
+
+## What bearpond is not
+
+- **A query engine.** The read model is pull-then-query-locally; there is no server-side SQL. At this scale that's a feature — local DuckDB over a pulled mirror is faster than any network query — but it means everyone works from a mirror (subset pulls are on the roadmap).
+- **Highly available.** The server is one node. Crashes recover cleanly (SQLite plus the exported manifests), but losing the disk is your backup problem, and downtime pauses commits and pulls.
+- **A table format.** No schema enforcement or evolution, no `VERSION AS OF` inside your DataFrame library — bearpond versions *files*, not tables. If you need query-engine-integrated time travel, that's Delta or Iceberg.
 
 ## Concepts
 
@@ -24,7 +53,7 @@ bearpond is a data server and client for versioned collections of [Apache Parque
 | **seq** | the lake's version number — increments on every commit |
 | **manifest** | the snapshot of the lake at a seq — what clients consume |
 
-Two rules keep the model honest: a path that exists cannot be added again (modification is a separate operation, compaction), and a removal is only safe against the exact content the client observed — so concurrent writers conflict loudly instead of corrupting silently.
+Three rules keep the model honest: a path can only be added if it does not already exist; a removal is only safe against the exact content the client observed; and an update is only safe against the exact old content the client observed, producing a new content pointer under the same path — so concurrent writers conflict loudly instead of corrupting silently. Compaction creates new aggregate files under new paths and removes the old ones.
 
 ## Quickstart
 
@@ -58,8 +87,9 @@ cd trades
 
 ```bash
 bearpond add ./out/year=2024            # a directory expands to the .parquet files beneath it
+bearpond add ./out/year=2024/month=01/part.parquet  # re-adding a tracked file stages an update
 bearpond rm ./out/year=2024/month=01/part.parquet   # stage a removal (offline, like add)
-bearpond status                         # staged / untracked / modified / missing / pending
+bearpond status                         # staged add/remove/update / untracked / modified / missing / pending
 bearpond commit -m "january trades"     # begin + upload + commit as one short transaction
 bearpond log --limit 10                 # commit history: hash, seq, author, message
 ```
@@ -70,6 +100,13 @@ bearpond log --limit 10                 # commit history: hash, seq, author, mes
 bearpond pull
 # the workspace now holds the lake in hive layout, with .bearpond/manifest.json
 # recording exactly which server manifest it represents
+```
+
+**Pull a specific version:**
+
+```bash
+bearpond pull --seq 42
+# mirror the lake as of manifest seq 42 instead of the latest
 ```
 
 **Auth:** the server checks a bearer token when `BEARPOND_TOKEN` is set (unset = open, for local use). The CLI reads the same variable. Real multi-user auth is on the roadmap (below).
@@ -120,7 +157,7 @@ tests/                # pytest suite (domain, API, client end-to-end)
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest        # 60+ tests: domain, API over live HTTP, end-to-end client flows
+python -m pytest        # 90+ tests: domain, API over live HTTP, end-to-end client flows
 ```
 
 ## Roadmap
@@ -129,7 +166,9 @@ python -m pytest        # 60+ tests: domain, API over live HTTP, end-to-end clie
 - **Garbage collection** — reclaim objects no longer referenced by any retained version
 - **Retention policies** — how long removed content stays recoverable
 - **`rebuild-db`** — reconstruct the metadata store from the exported manifests/commits
-- **Compaction** — the sanctioned way to modify an existing path
+- **Compaction** — combine smaller files into larger ones by adding new aggregate paths and removing the now-redundant small ones
+- **Point-in-time pull** — `pull --seq N` to mirror the lake as of any version (the store already reconstructs any seq server-side) *(implemented)*
+- **Subset pull** — `pull --query key=value` to mirror only the partitions matching hive predicates
 
 ## License
 

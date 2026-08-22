@@ -36,6 +36,7 @@ class WorkspaceStatus(BaseModel):
     pending: list[str]
     staged_added: list[types.FileMetadata]
     staged_removed: list[types.FileMetadata]
+    staged_updated: list[types.UpdatedFileMetadata]
     untracked: list[str]
     modified: list[str]
     missing: list[str]
@@ -213,8 +214,12 @@ class BearpondClient:
         seq: int = manifest_for_seq.seq if manifest_for_seq is not None else 0
         tracked_dict: dict[str, FileState] = self._tracked_files()
         staged_manifest: types.TransactionManifest = self._staged_manifest()
-        staged_paths: set[str] = {f.path for f in staged_manifest.added} | {f.path for f in staged_manifest.removed}
-        # files reported via their own status fields — staged via staged_added/staged_removed, pending via pending
+        staged_paths: set[str] = (
+            {f.path for f in staged_manifest.added}
+            | {f.path for f in staged_manifest.removed}
+            | {f.path for f in staged_manifest.updated}
+        )
+        # files reported via their own status fields — staged via staged_added/staged_removed/staged_updated, pending via pending
         accounted_paths: set[str] = staged_paths | set(self._load_pending())
         
         untracked_paths: list[str] = []
@@ -229,11 +234,12 @@ class BearpondClient:
                     # drift from what the workspace has recorded: size short-circuits, hash only when the size still matches
                     tracked_file_state: FileState = tracked_dict[rel_path]
                     if path.stat().st_size != tracked_file_state.size:
-                        modified_paths.append(rel_path)
+                        if rel_path not in accounted_paths:
+                            modified_paths.append(rel_path)
                     else:
                         # the size matches, check the hash
                         sha256, _ = server_client.hash_and_size(path)
-                        if sha256 != tracked_file_state.sha256:
+                        if sha256 != tracked_file_state.sha256 and rel_path not in accounted_paths:
                             modified_paths.append(rel_path)
                 
                 # if it's not tracked, is it staged or pending?
@@ -244,7 +250,7 @@ class BearpondClient:
         for rel_path in tracked_dict:
             # if the file does not exist
             if not (self.workdir / rel_path).is_file():
-                # and the path is not in staged.removed or pending
+                # and the path is not in staged.removed, staged.updated, or pending
                 if rel_path not in accounted_paths:
                     # then it's missing
                     missing_paths.append(rel_path)
@@ -254,6 +260,7 @@ class BearpondClient:
             pending=sorted(self._load_pending()),
             staged_added=staged_manifest.added,
             staged_removed=staged_manifest.removed,
+            staged_updated=staged_manifest.updated,
             untracked=untracked_paths,
             modified=modified_paths,
             missing=missing_paths,
@@ -285,8 +292,11 @@ class BearpondClient:
         
         # get the staged manifest; we at least get an empty one
         staged_manifest: types.TransactionManifest = self._staged_manifest()
-        # we use a dict here to handle upserts, essentially multiple inserts of the same file should be OK
+        tracked_dict: dict[str, FileState] = self._tracked_files()
+        # we use dicts here to handle upserts, essentially multiple inserts of the same file should be OK
         staged_added_dict: dict[str, types.FileMetadata] = {f.path: f for f in staged_manifest.added}
+        staged_removed_dict: dict[str, types.FileMetadata] = {f.path: f for f in staged_manifest.removed}
+        staged_updated_dict: dict[str, types.UpdatedFileMetadata] = {f.path: f for f in staged_manifest.updated}
         
         # loop through all the resolved paths
         result_list: list[types.FileMetadata] = []
@@ -307,15 +317,40 @@ class BearpondClient:
             sha256, size = server_client.hash_and_size(path)
             entry: types.FileMetadata = types.FileMetadata(path=rel_path, size=size, sha256=sha256)
             
-            # upsert the FileMetadata entry
-            staged_added_dict[rel_path] = entry
+            if rel_path in tracked_dict:
+                # a tracked path: adding it means an update (or a cancellation of a pending removal)
+                tracked_file_state: FileState = tracked_dict[rel_path]
+                if tracked_file_state.sha256 == sha256:
+                    # identical to what's tracked — cancel any pending removal or update, but don't stage a no-op
+                    staged_removed_dict.pop(rel_path, None)
+                    staged_updated_dict.pop(rel_path, None)
+                else:
+                    staged_added_dict.pop(rel_path, None)
+                    staged_removed_dict.pop(rel_path, None)
+                    staged_updated_dict[rel_path] = types.UpdatedFileMetadata(
+                        path=rel_path,
+                        old_size=tracked_file_state.size,
+                        old_sha256=tracked_file_state.sha256,
+                        new_size=size,
+                        new_sha256=sha256,
+                    )
+            else:
+                # an untracked path: stage it as an add, and clear any pending removal/update of the same path
+                staged_removed_dict.pop(rel_path, None)
+                staged_updated_dict.pop(rel_path, None)
+                staged_added_dict[rel_path] = entry
             
             # add to the result_list
             result_list.append(entry)
         
-        # update the staged manifest with the new list of added paths
+        # update the staged manifest with the new lists
         self._save_staged(
-            types.TransactionManifest(added=list(staged_added_dict.values()), removed=staged_manifest.removed))
+            types.TransactionManifest(
+                added=list(staged_added_dict.values()),
+                removed=list(staged_removed_dict.values()),
+                updated=list(staged_updated_dict.values()),
+            )
+        )
         return result_list
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -332,6 +367,7 @@ class BearpondClient:
         staged_manifest: types.TransactionManifest = self._staged_manifest()
         staged_added_dict: dict[str, types.FileMetadata] = {f.path: f for f in staged_manifest.added}
         staged_removed_dict: dict[str, types.FileMetadata] = {f.path: f for f in staged_manifest.removed}
+        staged_updated_dict: dict[str, types.UpdatedFileMetadata] = {f.path: f for f in staged_manifest.updated}
         
         # loop over all the specified targets
         for target in targets:
@@ -344,22 +380,27 @@ class BearpondClient:
             
             
             if rel_path in tracked_dict:
-                # a tracked path: stage the removal against the recorded content, cancelling any pending re-add
+                # a tracked path: stage the removal against the recorded content, cancelling any pending re-add or update
                 staged_added_dict.pop(rel_path, None)
+                staged_updated_dict.pop(rel_path, None)
                 observed: FileState = tracked_dict[rel_path]
                 staged_removed_dict[rel_path] = types.FileMetadata(
                     path=rel_path, size=observed.size, sha256=observed.sha256
                 )
             else:
-                # nothing in the lake to remove — rm can only mean "cancel a pending add"
+                # nothing in the lake to remove — rm can only mean "cancel a pending add/update"
                 if rel_path in staged_added_dict:
                     del staged_added_dict[rel_path]
+                elif rel_path in staged_updated_dict:
+                    del staged_updated_dict[rel_path]
                 else:
                     raise server_client.BearpondError(f"not tracked by the workspace: {rel_path}")
         
-        # update the staged manifest with the new list of added paths
+        # update the staged manifest with the new lists
         result: types.TransactionManifest = types.TransactionManifest(
-            added=list(staged_added_dict.values()), removed=list(staged_removed_dict.values())
+            added=list(staged_added_dict.values()),
+            removed=list(staged_removed_dict.values()),
+            updated=list(staged_updated_dict.values()),
         )
         self._save_staged(result)
         return result
@@ -371,21 +412,23 @@ class BearpondClient:
         # the one short-lived server interaction: begin, upload everything staged, commit — all in one go
         self._require_no_pending_pull()
         manifest: types.TransactionManifest = self._staged_manifest()
-        if not manifest.added and not manifest.removed:
+        if not manifest.added and not manifest.removed and not manifest.updated:
             raise server_client.BearpondError("nothing staged to commit — stage files with `bearpond add` first")
         
         # the staged metadata must still match what's on disk — re-hash everything and refuse on any drift
         files: dict[str, Path] = {f.path: self.workdir / f.path for f in manifest.added}
+        files.update({f.path: self.workdir / f.path for f in manifest.updated})
         for rel_path, local_path in files.items():
             if not local_path.is_file():
                 raise server_client.BearpondError(f"staged file is missing: {rel_path} (re-stage with `bearpond add`)")
         staged_by_path: dict[str, types.FileMetadata] = {f.path: f for f in manifest.added}
+        staged_by_path.update({f.path: types.FileMetadata(path=f.path, size=f.new_size, sha256=f.new_sha256) for f in manifest.updated})
         current: list[types.FileMetadata] = server_client.ServerClient.declare_files(files)
         drifted: list[str] = [f.path for f in current if staged_by_path[f.path].sha256 != f.sha256]
         if drifted:
             raise server_client.BearpondError(f"modified since staged — re-stage with `bearpond add`: {drifted}")
         
-        txn_uuid: str = server.begin_transaction(current, manifest.removed)
+        txn_uuid: str = server.begin_transaction(manifest.added, manifest.removed, manifest.updated)
         result: types.CommitResponse
         try:
             server.upload_files(txn_uuid, files)
@@ -412,12 +455,17 @@ class BearpondClient:
         return result
     
     # ------------------------------------------------------------------------------------------------------------------
-    def pull(self, server: server_client.ServerClient, dry_run: bool = False) -> None:
+    def pull(self, server: server_client.ServerClient, dry_run: bool = False, seq: int | None = None) -> None:
+        # a point-in-time pull changes the base manifest the workspace represents, which conflicts with an interrupted
+        # pull whose pending overlay was computed against a different target
+        if seq is not None:
+            self._require_no_pending_pull()
+        
         # let's make sure that the workdir exists
         self.workdir.mkdir(parents=True, exist_ok=True)
         
         # get the manifest from the server
-        manifest: types.Manifest = server.get_manifest()
+        manifest: types.Manifest = server.get_manifest(seq=seq)
         manifest_files: dict[str, FileState] = {
             f.path: FileState(size=f.size, sha256=f.sha256) for f in manifest.files
         }

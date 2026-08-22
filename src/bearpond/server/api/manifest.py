@@ -11,10 +11,13 @@ router: APIRouter = APIRouter(prefix="/repos/{repo_name}", tags=["manifest"], de
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.get("/manifest")
-def get_manifest(repo_name: str) -> types.Manifest:
+def get_manifest(repo_name: str, seq: int | None = None) -> types.Manifest:
     store: metadata_store.MetadataStore = repository.get_repository(repo_name).metadata_store
     # reading the seq first and the manifest by seq gives a consistent snapshot even if a commit lands between the two
-    manifest: types.Manifest | None = store.get_manifest(store.get_current_seq())
+    target_seq: int = seq if seq is not None else store.get_current_seq()
+    manifest: types.Manifest | None = store.get_manifest(target_seq)
     if manifest is None:
+        if seq is not None:
+            raise HTTPException(HTTP_404_NOT_FOUND, f"no manifest for seq {seq}")
         raise HTTPException(HTTP_404_NOT_FOUND, "no manifest has been generated yet")
     return manifest

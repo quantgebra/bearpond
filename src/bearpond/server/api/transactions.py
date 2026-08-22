@@ -17,6 +17,7 @@ def begin_transaction(repo_name: str, manifest: types.TransactionManifest) -> ty
         txn_uuid=txn.txn_uuid,
         added_files=list(txn.load_declared().keys()),
         removed_files=list(txn.load_removed().keys()),
+        updated_files=list(txn.load_updated().keys()),
     )
 
 
@@ -63,6 +64,7 @@ def commit_transaction(repo_name: str, txn_uuid: str, payload: types.CommitReque
             seq=record.seq,
             files_added_count=len(record.added),
             files_removed_count=len(record.removed),
+            files_updated_count=len(record.updated),
         )
     return result
 
