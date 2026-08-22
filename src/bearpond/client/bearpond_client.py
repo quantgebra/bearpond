@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from collections.abc import Iterator
 from typing import NamedTuple, Optional
 
 from pydantic import BaseModel
@@ -62,6 +63,18 @@ def prune_empty_dirs(root: Path, start: Path) -> None:
             break
         current.rmdir()
         current = current.parent
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def _iter_visible_files(root: Path) -> Iterator[Path]:
+    # walk the workspace for user files, skipping hidden files and directories (including .bearpond/ and .git/)
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel_path: Path = path.relative_to(root)
+        if any(part.startswith(".") for part in rel_path.parts):
+            continue
+        yield path
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -287,7 +300,7 @@ class BearpondClient:
         modified_paths: list[str] = []
         missing_paths: list[str] = []
         if self.workdir.exists():
-            for path in sorted(self.workdir.rglob("*.parquet")):
+            for path in sorted(_iter_visible_files(self.workdir)):
                 rel_path: str = path.relative_to(self.workdir).as_posix()
                 
                 # check if the path is part of the tracked files
@@ -332,7 +345,7 @@ class BearpondClient:
     
     # ------------------------------------------------------------------------------------------------------------------
     def add(self, targets: list[Path]) -> list[types.FileMetadata]:
-        # stages each target for the next commit: directories expand to the .parquet files beneath them, and a
+        # stages each target for the next commit: directories expand to the files beneath them, and a
         # file's lake path is its location relative to the workspace root. Re-adding a path updates its entry.
         
         # make sure we don't have a hanging interrupted pull
@@ -344,8 +357,8 @@ class BearpondClient:
             # resolve up front so the relative_to() check below works whether targets are relative or absolute
             target = target.resolve()
             if target.is_dir():
-                # for a directory, include all child parquet files recursively
-                resolved_paths.extend(sorted(target.rglob("*.parquet")))
+                # for a directory, include all child files recursively (excluding hidden files and directories)
+                resolved_paths.extend(sorted(_iter_visible_files(target)))
             elif target.is_file():
                 # if it's a file, just add it
                 resolved_paths.append(target)
@@ -369,9 +382,9 @@ class BearpondClient:
             except ValueError:
                 raise server_client.BearpondError(f"path is outside the working directory: {path}")
             
-            # validate the hive layout and parquet file name
+            # validate the hive layout
             try:
-                types.validate_hive_parquet_path(rel_path)
+                types.validate_hive_path(rel_path)
             except ValueError as e:
                 raise server_client.BearpondError(str(e))
             

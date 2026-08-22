@@ -28,9 +28,10 @@ def test_begin_rejects_empty_manifest(repo: repository.Repository) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_begin_rejects_non_parquet_path(repo: repository.Repository) -> None:
-    with pytest.raises(transaction.TransactionValidationError, match="not a parquet file"):
-        begin(repo, added=[conftest.file_meta("year=2024/data.csv", CONTENT)])
+def test_begin_allows_csv_in_hive_path(repo: repository.Repository) -> None:
+    # the file format restriction is gone: CSV, JSON, ORC, raw text, etc. are all valid as long as the hive layout holds
+    txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("year=2024/data.csv", CONTENT)])
+    assert txn.load_declared()["year=2024/data.csv"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -40,10 +41,10 @@ def test_begin_rejects_non_hive_segment(repo: repository.Repository) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_begin_allows_top_level_parquet(repo: repository.Repository) -> None:
+def test_begin_allows_top_level_file(repo: repository.Repository) -> None:
     # partition segments are optional — a bare filename is a valid add
-    txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("part.parquet", CONTENT)])
-    assert txn.load_declared()["part.parquet"].size == len(CONTENT)
+    txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("part.csv", CONTENT)])
+    assert txn.load_declared()["part.csv"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------

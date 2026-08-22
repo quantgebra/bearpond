@@ -27,6 +27,9 @@ bearpond = "bearpond.client.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+bearpond = ["server/static/**/*", "server/static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # lets the test suite import bearpond straight from src/ without an editable install

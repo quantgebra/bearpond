@@ -11,6 +11,7 @@ from starlette.status import (
 )
 
 from .. import metadata_store, repository, transaction, utils
+from .. import ui as ui_module
 from . import commits, files, manifest, repos, transactions
 
 
@@ -30,6 +31,8 @@ app.include_router(commits.router)
 app.include_router(transactions.router)
 app.include_router(manifest.router)
 app.include_router(files.router)
+app.include_router(ui_module.router)
+ui_module.mount_ui(app)
 
 
 # ----------------------------------------------------------------------------------------------------------------------

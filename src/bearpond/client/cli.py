@@ -134,7 +134,7 @@ def main() -> None:
     clone_parser.set_defaults(func=cmd_clone)
 
     add_parser: argparse.ArgumentParser = subparsers.add_parser(
-        "add", help="Stage files (or directories of .parquet files) for the next commit — purely local"
+        "add", help="Stage files (or directories of files) for the next commit — purely local"
     )
     add_parser.add_argument("paths", type=Path, nargs="+", help="Files or directories to stage")
     add_parser.set_defaults(func=cmd_add)

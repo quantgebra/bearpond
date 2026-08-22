@@ -12,12 +12,9 @@ _HIVE_PARTITION_SEGMENT: re.Pattern = re.compile(r"^\w+=[^/=]+$")
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def validate_hive_parquet_path(rel_path: str) -> None:
-    # the path convention both sides enforce: .parquet files under hive-style key=value partition directories.
+def validate_hive_path(rel_path: str) -> None:
+    # the path convention both sides enforce: files under hive-style key=value partition directories.
     # raises ValueError on any violation — each side maps that to its own error type.
-    if not rel_path.endswith(".parquet"):
-        raise ValueError(f"path is not a parquet file: {rel_path}")
-
     # every directory segment before the filename must be a hive partition key=value pair
     segments: list[str] = rel_path.split("/")
     for segment in segments[:-1]:

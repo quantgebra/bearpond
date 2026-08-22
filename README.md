@@ -2,16 +2,16 @@
 
 A small, transactional data lake — a pond, really — where bears (pandas, Polars) come to play.
 
-bearpond is a central data server and sync client for versioned collections of [Apache Parquet](https://parquet.apache.org/) files, built for teams. It gives you the semantics of a [lakehouse](https://www.databricks.com/glossary/data-lakehouse) without the lakehouse machinery.  Bearpond does include content-addressed storage, atomic commits, and point-in-time manifests from one server process, a directory, and SQLite — no Spark, no metastore, no object store.
+bearpond is a central data server and sync client for versioned collections of files, built for teams. It gives you the semantics of a [lakehouse](https://www.databricks.com/glossary/data-lakehouse) without the lakehouse machinery.  Bearpond does include content-addressed storage, atomic commits, and point-in-time manifests from one server process, a directory, and SQLite — no Spark, no metastore, no object store.
 
 ## Who it's for
 
 bearpond is built for a small team with central data: a handful of ETL processes writing, a handful of analysts and system processes reading. The archetype is a research/quant team that has outgrown the usual small-team plumbing — ETL jobs dropping files into S3, Dropbox syncing them out to analysts, naming conventions holding it all together — and wants correctness (atomicity, integrity, history) without adopting the Spark/Iceberg/object-store stack to get it. Think: daily bars for 10K equity symbols, intraday data for futures, crypto, and prediction markets, produced by a fleet of batch jobs and consumed from desks and notebooks.
 
 - **Writers** are batch processes making a handful of commits a day, each adding or removing whole files — yesterday's daily bars, the latest intraday partitions.
-- **Readers** run `bearpond pull` to maintain a verified local mirror in hive-partition layout, then query with pandas, Polars, DuckDB, or any Parquet reader. The mirror replaces the Dropbox share: incremental, content-verified, and always a complete, consistent version of the lake.
+- **Readers** run `bearpond pull` to maintain a verified local mirror in hive-partition layout, then query with pandas, Polars, DuckDB, or any data tool. The mirror replaces the Dropbox share: incremental, content-verified, and always a complete, consistent version of the lake.
 
-**The sweet spot: coarse files, not fine ones.** bearpond addresses and transfers whole files and records the full file list in every commit, so it rewards few large Parquet files over many tiny ones. Prefer `date=2026-08-21/equities.parquet` — all symbols in one columnar file, filtered by symbol at query time, which DuckDB and Polars do trivially — over one file per symbol per day. A handful of commits a day, each touching hundreds of files at most, is the design center.
+**The sweet spot: coarse files, not fine ones.** bearpond addresses and transfers whole files and records the full file list in every commit, so it rewards few large files over many tiny ones. Prefer `date=2026-08-21/equities.parquet` — all symbols in one columnar file, filtered by symbol at query time, which DuckDB and Polars do trivially — over one file per symbol per day. A handful of commits a day, each touching hundreds of files at most, is the design center.
 
 ## What it does
 
@@ -19,7 +19,8 @@ bearpond is built for a small team with central data: a handful of ETL processes
 - **Content-addressed storage.** Every distinct file content is stored exactly once, named by its sha256 (`objects/ab/abcdef…`). The name *is* the content — insertion verifies the hash, so integrity is enforced, not assumed.
 - **Versioned manifests.** Every commit produces a manifest — the full list of files in the lake at that version (`manifest-00000042.json`). Clients read the manifest, never directory listings, and can verify every byte they download.
 - **Git-style commit chain.** Each commit record carries a `commit_hash` computed over the change, its parent, its timestamp, and its author — so the history is self-certifying and tamper-evident.
-- **Safe pull.** `bearpond pull` maintains a local mirror of the lake in hive-partition layout, fetching only what changed and pruning what was removed — ready for pandas, Polars, DuckDB, or any Parquet reader. Subset pulls let a workspace track only the partitions it needs.
+- **Safe pull.** `bearpond pull` maintains a local mirror of the lake in hive-partition layout, fetching only what changed and pruning what was removed — ready for pandas, Polars, DuckDB, or any data tool. Subset pulls let a workspace track only the partitions it needs.
+- **Web UI.** A React interface for browsing repositories, manifests, and commit history is served by the same FastAPI process.
 - **Crash-safe by construction.** Immutable objects plus an atomic SQLite metadata commit mean a crash at any point leaves the lake either exactly on a version or cleanly retryable. Startup reconciles the exported manifests with the store automatically.
 
 ## Why bearpond — and the alternatives
@@ -47,7 +48,7 @@ bearpond's side of the trade: atomic all-or-nothing commits across many files, l
 | Concept | What it is |
 |---|---|
 | **object** | a file's content, stored once under its sha256 in `objects/` |
-| **path** | a file's logical location in the lake, e.g. `year=2024/month=01/part.parquet` (hive layout, `.parquet` only) |
+| **path** | a file's logical location in the lake, e.g. `year=2024/month=01/part.parquet` (hive layout; any file format is valid) |
 | **transaction** | an in-flight unit of work (begin → upload → commit or abort); aborts leave no trace |
 | **commit** | the permanent record of a committed transaction: `commit_hash`, `seq`, timestamp, author, full file list |
 | **seq** | the lake's version number — increments on every commit |
@@ -86,8 +87,9 @@ cd trades
 **Commit files.** Like git, staging is local and the server interaction is one short, atomic action — `add` records file metadata in the staging area (`.bearpond/staged.json`), and `commit` begins a transaction, uploads everything staged, and commits in one go. All run from inside the cloned workspace:
 
 ```bash
-bearpond add ./out/year=2024            # a directory expands to the .parquet files beneath it
+bearpond add ./out/year=2024            # a directory expands to the files beneath it
 bearpond add ./out/year=2024/month=01/part.parquet  # re-adding a tracked file stages an update
+bearpond add ./out/year=2024/month=01/data.csv      # CSV, JSON, ORC, raw text, etc. are all valid
 bearpond rm ./out/year=2024/month=01/part.parquet   # stage a removal (offline, like add)
 bearpond status                         # staged add/remove/update / untracked / modified / missing / pending
 bearpond commit -m "january trades"     # begin + upload + commit as one short transaction
@@ -130,6 +132,43 @@ Switching queries or `--seq` requires a clean workspace — no in-progress pull 
 
 **Auth:** the server checks a bearer token when `BEARPOND_TOKEN` is set (unset = open, for local use). The CLI reads the same variable. Real multi-user auth is on the roadmap (below).
 
+## Web UI
+
+bearpond ships with a small React web interface for browsing repositories, manifests, and commit history. It is served by the same FastAPI process on `/`.
+
+**Production use:** build the frontend once and restart the server:
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+The build output lands in `src/bearpond/server/static/`, which FastAPI serves. Then start the server normally:
+
+```bash
+export BEARPOND_CONFIG_DIR=/path/to/config
+uvicorn bearpond.server.api.app:app --port 8000
+```
+
+Open `http://localhost:8000/` to browse repositories.
+
+**Development:** run the FastAPI backend and Vite dev server side by side. The dev server proxies API calls to the backend:
+
+Terminal 1:
+```bash
+export BEARPOND_CONFIG_DIR=/path/to/config
+uvicorn bearpond.server.api.app:app --port 8000
+```
+
+Terminal 2:
+```bash
+cd web
+npm run dev
+```
+
+Open `http://localhost:5173/` for live-reload development.
+
 ## HTTP API
 
 | Method & path | Purpose |
@@ -167,8 +206,9 @@ Layout of this repo:
 ```
 src/bearpond/
   types.py            # the wire protocol shared by server and client
-  server/             # FastAPI app, repository, transaction, metadata store, object store
+  server/             # FastAPI app, repository, transaction, metadata store, object store, static UI files
   client/             # workspace client + CLI (add/rm/commit/pull/status)
+web/                  # React + TypeScript web UI source (Vite)
 tests/                # pytest suite (domain, API, client end-to-end)
 ```
 
@@ -176,7 +216,22 @@ tests/                # pytest suite (domain, API, client end-to-end)
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest        # 90+ tests: domain, API over live HTTP, end-to-end client flows
+python -m pytest        # 118 tests: domain, API over live HTTP, end-to-end client flows
+```
+
+The web UI lives in `web/` and uses Vite + React + TypeScript. To work on it:
+
+```bash
+cd web
+npm install
+npm run dev             # serves the UI on http://localhost:5173 with API proxy to :8000
+```
+
+Build it before packaging or testing the served version:
+
+```bash
+cd web
+npm run build           # outputs to src/bearpond/server/static/
 ```
 
 ## Roadmap
@@ -188,6 +243,7 @@ python -m pytest        # 90+ tests: domain, API over live HTTP, end-to-end clie
 - **Compaction** — combine smaller files into larger ones by adding new aggregate paths and removing the now-redundant small ones
 - **Point-in-time pull** — `pull --seq N` to mirror the lake as of any version (the store already reconstructs any seq server-side) *(implemented)*
 - **Subset pull** — `pull --query key=value` to mirror only the partitions matching hive predicates *(implemented)*
+- **Web UI** — React interface for browsing repositories, manifests, and commit history *(scaffolded; admin and user management via the UI is future work)*
 
 ## License
 

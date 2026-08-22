@@ -41,7 +41,9 @@ def client(live_server: str) -> Iterator[server_client.ServerClient]:
 def commit_source_dir(client: server_client.ServerClient, source_dir: Path) -> types.CommitResponse:
     # drives the full transport-level write lifecycle: begin -> upload -> commit
     files: dict[str, Path] = {
-        path.relative_to(source_dir).as_posix(): path for path in sorted(source_dir.rglob("*.parquet"))
+        path.relative_to(source_dir).as_posix(): path
+        for path in sorted(source_dir.rglob("*"))
+        if path.is_file()
     }
     declared: list[types.FileMetadata] = client.declare_files(files)
     txn_uuid: str = client.begin_transaction(declared)

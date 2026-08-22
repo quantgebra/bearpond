@@ -64,10 +64,10 @@ def test_stage_files_records_metadata(workdir: Path) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_stage_files_expands_directories(workdir: Path) -> None:
-    (workdir / "year=2024/month=02/notes.txt").write_text("not parquet")
+    (workdir / "year=2024/month=02/notes.txt").write_text("a non-parquet file")
 
     staged: list[types.FileMetadata] = bearpond_client.BearpondClient(workdir).add([Path("year=2024")])
-    assert [f.path for f in staged] == [HIVE_PATH, OTHER_PATH]
+    assert [f.path for f in staged] == [HIVE_PATH, "year=2024/month=02/notes.txt", OTHER_PATH]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -75,15 +75,25 @@ def test_stage_files_rejects_bad_targets(workdir: Path, tmp_path: Path) -> None:
     with pytest.raises(server_client.BearpondError, match="no such file"):
         bearpond_client.BearpondClient(workdir).add([Path("nope.parquet")])
 
-    elsewhere: Path = tmp_path / "elsewhere.parquet"
+    elsewhere: Path = tmp_path / "elsewhere.csv"
     elsewhere.write_bytes(b"x")
     with pytest.raises(server_client.BearpondError, match="outside the working directory"):
         bearpond_client.BearpondClient(workdir).add([elsewhere])
 
-    bad: Path = workdir / "year=2024/bad.csv"
+    bad: Path = workdir / "year=2024/raw/bad.csv"
+    bad.parent.mkdir(parents=True)
     bad.write_bytes(b"x")
-    with pytest.raises(server_client.BearpondError, match="not a parquet file"):
-        bearpond_client.BearpondClient(workdir).add([Path("year=2024/bad.csv")])
+    with pytest.raises(server_client.BearpondError, match="hive partition"):
+        bearpond_client.BearpondClient(workdir).add([Path("year=2024/raw/bad.csv")])
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_stage_files_accepts_csv(workdir: Path) -> None:
+    csv_path: Path = workdir / "year=2024/month=02/data.csv"
+    csv_path.write_bytes(b"year,month,value\n2024,2,42")
+
+    staged: list[types.FileMetadata] = bearpond_client.BearpondClient(workdir).add([Path("year=2024/month=02/data.csv")])
+    assert [f.path for f in staged] == ["year=2024/month=02/data.csv"]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
