@@ -7,6 +7,7 @@ from bearpond import types
 from bearpond.server import config
 from bearpond.server import metadata_store
 from bearpond.server import repository
+from bearpond.server import server as server_module
 from bearpond.server import transaction
 
 HIVE_PATH = "year=2024/month=01/part.parquet"
@@ -32,21 +33,21 @@ def test_begin_rejects_empty_manifest(repo: repository.Repository) -> None:
 def test_begin_allows_csv_in_hive_path(repo: repository.Repository) -> None:
     # hive layout is recommended for subset pulls but no longer required
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("year=2024/data.csv", CONTENT)])
-    assert txn.load_declared()["year=2024/data.csv"].size == len(CONTENT)
+    assert txn.declared["year=2024/data.csv"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_allows_arbitrary_path(repo: repository.Repository) -> None:
     # paths are no longer required to follow hive-style key=value directories
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("trades/2024-08-22/executions.json", CONTENT)])
-    assert txn.load_declared()["trades/2024-08-22/executions.json"].size == len(CONTENT)
+    assert txn.declared["trades/2024-08-22/executions.json"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_allows_top_level_file(repo: repository.Repository) -> None:
     # a bare filename is also valid
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("part.csv", CONTENT)])
-    assert txn.load_declared()["part.csv"].size == len(CONTENT)
+    assert txn.declared["part.csv"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -100,16 +101,14 @@ def test_begin_rejects_byte_identical_readd(repo: repository.Repository) -> None
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_begin_creates_staging_dir_and_state(repo: repository.Repository) -> None:
+def test_begin_creates_transaction_state(repo: repository.Repository) -> None:
     meta: types.FileMetadata = conftest.file_meta(HIVE_PATH, CONTENT)
     txn: transaction.Transaction = begin(repo, added=[meta])
-    assert txn.txn_dir.is_dir()
-    declared: dict[str, transaction.FileMeta] = txn.load_declared()
-    assert declared[HIVE_PATH].sha256 == meta.sha256
+    assert txn.declared[HIVE_PATH].sha256 == meta.sha256
 
     # the same transaction is reachable by id afterwards, with the same state
     fetched: transaction.Transaction = repo.get_transaction(txn.txn_uuid)
-    assert fetched.load_declared().keys() == declared.keys()
+    assert fetched.declared.keys() == txn.declared.keys()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -124,47 +123,16 @@ def test_latest_is_none_on_fresh_repo(repo: repository.Repository) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_commit_writes_manifest_and_record_exports(repo: repository.Repository) -> None:
-    conftest.commit_files(repo, {HIVE_PATH: CONTENT})
-
-    # the exported audit trail: manifest file, _latest pointer, and one commit record per transaction
-    manifest_path: Path = repo.manifest_root / "manifest-00000001.json"
-    assert manifest_path.is_file()
-    assert repo.latest_pointer.read_text().strip() == "manifest-00000001.json"
-
-    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
-    assert len(records) == 1
-    assert (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").is_file()
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-def test_recover_reexports_deleted_exports(repo: repository.Repository) -> None:
-    conftest.commit_files(repo, {HIVE_PATH: CONTENT})
-    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
-
-    # a crash interrupted the export — the files are gone but the store knows the commit happened
-    (repo.manifest_root / "manifest-00000001.json").unlink()
-    repo.latest_pointer.unlink()
-    (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").unlink()
-
-    repo.recover()
-
-    assert (repo.manifest_root / "manifest-00000001.json").is_file()
-    assert repo.latest_pointer.read_text().strip() == "manifest-00000001.json"
-    assert (repo.manifest_root / "commits" / f"{records[0].txn_uuid}.json").is_file()
-
-
-# ----------------------------------------------------------------------------------------------------------------------
 def test_multiple_repos_share_one_db_but_remain_isolated(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    repository.configure(
+    srv: server_module.Server = server_module.configure(
         config.ServerConfig(
             repos_root=repo_root,
             db_path=repo_root / "bearpond.sqlite",
             object_store_root=repo_root / "objects",
         )
     )
-    first: repository.Repository = repository.create_repository("first")
-    second: repository.Repository = repository.create_repository("second")
+    first: repository.Repository = srv.create_repository("first")
+    second: repository.Repository = srv.create_repository("second")
 
     conftest.commit_files(first, {"year=2024/a.csv": b"first repo"})
     conftest.commit_files(second, {"year=2024/b.csv": b"second repo"})
@@ -177,21 +145,21 @@ def test_multiple_repos_share_one_db_but_remain_isolated(repo_root: Path, monkey
     assert [f.path for f in first_manifest.files] == ["year=2024/a.csv"]
     assert [f.path for f in second_manifest.files] == ["year=2024/b.csv"]
 
-    assert repository.list_repositories() == ["first", "second"]
-    repository.close()
+    assert srv.list_repositories() == ["first", "second"]
+    server_module.close()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_multiple_repos_share_one_object_store(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    repository.configure(
+    srv: server_module.Server = server_module.configure(
         config.ServerConfig(
             repos_root=repo_root,
             db_path=repo_root / "bearpond.sqlite",
             object_store_root=repo_root / "objects",
         )
     )
-    first: repository.Repository = repository.create_repository("first")
-    second: repository.Repository = repository.create_repository("second")
+    first: repository.Repository = srv.create_repository("first")
+    second: repository.Repository = srv.create_repository("second")
 
     shared_content: bytes = b"shared bytes"
     conftest.commit_files(first, {"year=2024/shared.csv": shared_content})
@@ -202,4 +170,4 @@ def test_multiple_repos_share_one_object_store(repo_root: Path, monkeypatch: pyt
     assert first_location == second_location
     assert first_location.read_bytes() == shared_content
 
-    repository.close()
+    server_module.close()

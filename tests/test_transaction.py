@@ -41,9 +41,9 @@ def test_upload_rejects_sha_mismatch_and_leaves_nothing_behind(repo: repository.
     with pytest.raises(transaction.TransactionValidationError, match="sha256 mismatch"):
         conftest.upload_bytes(txn, HIVE_PATH, b"not the declared content")
 
-    assert txn.load_uploaded() == {}
-    assert not (txn.txn_dir / HIVE_PATH).exists()
-    assert not (txn.txn_dir / f"{HIVE_PATH}.tmp").exists()
+    assert txn.uploaded == {}
+    # the object was never placed in the content-addressed store because the stream did not match
+    assert not repo.object_store.contains_address(conftest.sha256_hex(b"not the declared content"))
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -72,7 +72,8 @@ def test_commit_lands_object_manifest_and_record(repo: repository.Repository) ->
     object_file: Path = conftest.object_path(repo, CONTENT)
     assert object_file.read_bytes() == CONTENT
     assert utils.sha256_file(object_file) == conftest.sha256_hex(CONTENT)
-    assert not txn.txn_dir.exists()
+    # the transaction state is deleted once the commit is recorded
+    assert repo.metadata_store.get_transaction(txn.txn_uuid) is None
 
     # the mapping points the path at the object, and the commit is on record
     current: types.FileMetadata | None = repo.metadata_store.get_file_metadata(HIVE_PATH)
@@ -176,24 +177,13 @@ def test_readd_after_removal_starts_a_new_lifecycle(repo: repository.Repository)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_commit_rejects_staged_file_corrupted_after_upload(repo: repository.Repository) -> None:
-    # upload verified the content, but the staged file was damaged on disk afterwards — insertion re-verifies,
-    # because an object's name is only its content if someone checks
-    txn: transaction.Transaction = begin_add(repo, HIVE_PATH, CONTENT)
-    conftest.upload_bytes(txn, HIVE_PATH, CONTENT)
-    (txn.txn_dir / HIVE_PATH).write_bytes(b"corrupted on disk after upload")
-
-    with pytest.raises(transaction.TransactionConflictError, match="does not match its address"):
-        txn.commit()
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-def test_abort_clears_staging_dir(repo: repository.Repository) -> None:
+def test_abort_clears_transaction_state_but_leaves_orphan_object(repo: repository.Repository) -> None:
     txn: transaction.Transaction = begin_add(repo, HIVE_PATH, CONTENT)
     conftest.upload_bytes(txn, HIVE_PATH, CONTENT)
     txn.abort()
-    assert not txn.txn_dir.exists()
-    assert not repo.object_store.contains_address(conftest.sha256_hex(CONTENT))
+    # the transaction state is gone but the object remains in the content-addressed store as an orphan
+    assert repo.metadata_store.get_transaction(txn.txn_uuid) is None
+    assert repo.object_store.contains_address(conftest.sha256_hex(CONTENT))
 
 
 # ----------------------------------------------------------------------------------------------------------------------

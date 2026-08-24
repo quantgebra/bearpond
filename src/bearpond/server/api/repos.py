@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from ... import types
-from .. import repository
+from .. import server as server_module
 from . import dependencies
 
 router: APIRouter = APIRouter(prefix="/repos", tags=["repos"], dependencies=[Depends(dependencies.require_auth)])
@@ -9,13 +9,16 @@ router: APIRouter = APIRouter(prefix="/repos", tags=["repos"], dependencies=[Dep
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.get("")
-def list_repositories() -> list[types.RepositoryInfo]:
-    return [types.RepositoryInfo(name=name) for name in repository.list_repositories()]
+def list_repositories(server: server_module.Server = Depends(dependencies.get_server)) -> list[types.RepositoryInfo]:
+    return [types.RepositoryInfo(name=name) for name in server.list_repositories()]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.post("", status_code=201)
-def create_repository(request: types.CreateRepositoryRequest) -> types.RepositoryInfo:
+def create_repository(
+    request: types.CreateRepositoryRequest,
+    server: server_module.Server = Depends(dependencies.get_server),
+) -> types.RepositoryInfo:
     # an admin operation today (any authenticated caller); gains a role check when multi-user auth lands
-    repository.create_repository(request.name)
+    server.create_repository(request.name)
     return types.RepositoryInfo(name=request.name)

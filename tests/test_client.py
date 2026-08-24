@@ -181,21 +181,6 @@ def test_get_transaction_status(client: server_client.ServerClient, source_dir: 
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_get_manifest_survives_deleted_exports(
-    client: server_client.ServerClient,
-    source_dir: Path,
-    repo: repository.Repository,
-) -> None:
-    # the store is the source of truth — the exported manifest files can vanish without affecting readers
-    commit_source_dir(client, source_dir)
-    (repo.manifest_root / "manifest-00000001.json").unlink()
-    repo.latest_pointer.unlink()
-
-    manifest: types.Manifest = client.get_manifest()
-    assert sorted(f.path for f in manifest.files) == [PATH_A, PATH_B]
-
-
-# ----------------------------------------------------------------------------------------------------------------------
 def test_clone_creates_a_bound_workspace_with_files(
     client: server_client.ServerClient, source_dir: Path, live_server: str, tmp_path: Path
 ) -> None:

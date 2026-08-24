@@ -15,6 +15,7 @@ from bearpond import types
 from bearpond.server import config
 from bearpond.server import metadata_store
 from bearpond.server import repository
+from bearpond.server import server as server_module
 from bearpond.server import transaction
 from bearpond.server.api import app as app_module
 
@@ -124,16 +125,16 @@ def repo(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[repositor
     # points the process-wide registry at this test's fresh repos root, with one repository created inside it —
     # the app resolves repos per request, so reconfiguring here is enough for domain- and HTTP-level tests alike
     monkeypatch.delenv("BEARPOND_TOKEN", raising=False)
-    repository.configure(
+    srv: server_module.Server = server_module.configure(
         config.ServerConfig(
             repos_root=repo_root,
             db_path=repo_root / "bearpond.sqlite",
             object_store_root=repo_root / "objects",
         )
     )
-    instance: repository.Repository = repository.create_repository(REPO_NAME)
+    instance: repository.Repository = srv.create_repository(REPO_NAME)
     yield instance
-    repository.close()
+    server_module.close()
 
 
 # ======================================================================================================================

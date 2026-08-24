@@ -9,12 +9,19 @@ from typing import Protocol
 from pydantic import BaseModel, TypeAdapter
 
 from .. import types
+from . import transaction
 
 # validates/serializes the added/removed FileMetadata lists stored as JSON text in the commits table
 _file_meta_list_adapter: TypeAdapter[list[types.FileMetadata]] = TypeAdapter(list[types.FileMetadata])
 
 # validates/serializes the updated UpdatedFileMetadata list stored as JSON text in the commits table
 _updated_meta_list_adapter: TypeAdapter[list[types.UpdatedFileMetadata]] = TypeAdapter(list[types.UpdatedFileMetadata])
+
+# validates/serializes the dict[str, FileMeta] shape used for in-flight transaction state
+_txn_declared_adapter: TypeAdapter[dict[str, transaction.FileMeta]] = TypeAdapter(dict[str, transaction.FileMeta])
+
+# validates/serializes the dict[str, UpdatedFileMetadata] shape used for in-flight transaction state
+_txn_updated_adapter: TypeAdapter[dict[str, types.UpdatedFileMetadata]] = TypeAdapter(dict[str, types.UpdatedFileMetadata])
 
 
 # ======================================================================================================================
@@ -106,6 +113,31 @@ class MetadataStore(Protocol):
     def get_commit_record_page(self, limit: int, before_seq: int | None = None) -> types.CommitHistoryPage: ...
 
     # ------------------------------------------------------------------------------------------------------------------
+    def create_transaction(
+        self,
+        txn_uuid: str,
+        declared: dict[str, transaction.FileMeta],
+        removed: dict[str, transaction.FileMeta],
+        updated: dict[str, types.UpdatedFileMetadata],
+    ) -> None: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_transaction(
+        self, txn_uuid: str
+    ) -> tuple[
+        dict[str, transaction.FileMeta],
+        dict[str, transaction.FileMeta],
+        dict[str, types.UpdatedFileMetadata],
+        dict[str, transaction.FileMeta],
+    ] | None: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def save_transaction_uploaded(self, txn_uuid: str, uploaded: dict[str, transaction.FileMeta]) -> None: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def delete_transaction(self, txn_uuid: str) -> None: ...
+
+    # ------------------------------------------------------------------------------------------------------------------
     def close(self) -> None: ...
 
 
@@ -132,6 +164,24 @@ class ServerMetadataStore(Protocol):
     def get_commit_record_page(self, repo: str, limit: int, before_seq: int | None = None) -> types.CommitHistoryPage: ...
     def register_repo(self, repo: str) -> None: ...
     def list_repos(self) -> list[str]: ...
+    def create_transaction(
+        self,
+        repo: str,
+        txn_uuid: str,
+        declared: dict[str, transaction.FileMeta],
+        removed: dict[str, transaction.FileMeta],
+        updated: dict[str, types.UpdatedFileMetadata],
+    ) -> None: ...
+    def get_transaction(
+        self, repo: str, txn_uuid: str
+    ) -> tuple[
+        dict[str, transaction.FileMeta],
+        dict[str, transaction.FileMeta],
+        dict[str, types.UpdatedFileMetadata],
+        dict[str, transaction.FileMeta],
+    ] | None: ...
+    def save_transaction_uploaded(self, repo: str, txn_uuid: str, uploaded: dict[str, transaction.FileMeta]) -> None: ...
+    def delete_transaction(self, repo: str, txn_uuid: str) -> None: ...
     def close(self) -> None: ...
 
 
@@ -186,6 +236,35 @@ class RepoMetadataStoreView:
         return self._store.get_commit_record_page(self._repo, limit, before_seq)
 
     # ------------------------------------------------------------------------------------------------------------------
+    def create_transaction(
+        self,
+        txn_uuid: str,
+        declared: dict[str, transaction.FileMeta],
+        removed: dict[str, transaction.FileMeta],
+        updated: dict[str, types.UpdatedFileMetadata],
+    ) -> None:
+        return self._store.create_transaction(self._repo, txn_uuid, declared, removed, updated)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_transaction(
+        self, txn_uuid: str
+    ) -> tuple[
+        dict[str, transaction.FileMeta],
+        dict[str, transaction.FileMeta],
+        dict[str, types.UpdatedFileMetadata],
+        dict[str, transaction.FileMeta],
+    ] | None:
+        return self._store.get_transaction(self._repo, txn_uuid)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def save_transaction_uploaded(self, txn_uuid: str, uploaded: dict[str, transaction.FileMeta]) -> None:
+        return self._store.save_transaction_uploaded(self._repo, txn_uuid, uploaded)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def delete_transaction(self, txn_uuid: str) -> None:
+        return self._store.delete_transaction(self._repo, txn_uuid)
+
+    # ------------------------------------------------------------------------------------------------------------------
     def close(self) -> None:
         # the underlying server-wide store owns the connection; individual repo views must not close it
         pass
@@ -233,6 +312,18 @@ class SqliteMetadataStore(ServerMetadataStore):
     );
     CREATE UNIQUE INDEX IF NOT EXISTS commits_repo_seq ON commits(repo, seq);
     CREATE INDEX IF NOT EXISTS commits_repo_txn ON commits(repo, txn_uuid);
+
+    CREATE TABLE IF NOT EXISTS transactions (
+        repo TEXT NOT NULL,
+        txn_uuid TEXT NOT NULL,
+        declared TEXT NOT NULL,
+        removed TEXT NOT NULL,
+        updated TEXT NOT NULL,
+        uploaded TEXT NOT NULL,
+        PRIMARY KEY (repo, txn_uuid),
+        FOREIGN KEY (repo) REFERENCES repos(name)
+    );
+    CREATE INDEX IF NOT EXISTS transactions_repo_txn ON transactions(repo, txn_uuid);
     """
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -568,6 +659,67 @@ class SqliteMetadataStore(ServerMetadataStore):
         with self._lock:
             rows: list[tuple] = self._conn.execute("SELECT name FROM repos ORDER BY name").fetchall()
         return [row[0] for row in rows]
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def create_transaction(
+        self,
+        repo: str,
+        txn_uuid: str,
+        declared: dict[str, transaction.FileMeta],
+        removed: dict[str, transaction.FileMeta],
+        updated: dict[str, types.UpdatedFileMetadata],
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO transactions (repo, txn_uuid, declared, removed, updated, uploaded) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    repo,
+                    txn_uuid,
+                    _txn_declared_adapter.dump_json(declared).decode(),
+                    _txn_declared_adapter.dump_json(removed).decode(),
+                    _txn_updated_adapter.dump_json(updated).decode(),
+                    _txn_declared_adapter.dump_json({}).decode(),
+                ),
+            )
+            self._conn.commit()
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def get_transaction(
+        self, repo: str, txn_uuid: str
+    ) -> tuple[
+        dict[str, transaction.FileMeta],
+        dict[str, transaction.FileMeta],
+        dict[str, types.UpdatedFileMetadata],
+        dict[str, transaction.FileMeta],
+    ] | None:
+        with self._lock:
+            row: tuple | None = self._conn.execute(
+                "SELECT declared, removed, updated, uploaded FROM transactions WHERE repo = ? AND txn_uuid = ?",
+                (repo, txn_uuid),
+            ).fetchone()
+        if row is None:
+            return None
+        return (
+            _txn_declared_adapter.validate_json(row[0]),
+            _txn_declared_adapter.validate_json(row[1]),
+            _txn_updated_adapter.validate_json(row[2]),
+            _txn_declared_adapter.validate_json(row[3]),
+        )
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def save_transaction_uploaded(self, repo: str, txn_uuid: str, uploaded: dict[str, transaction.FileMeta]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE transactions SET uploaded = ? WHERE repo = ? AND txn_uuid = ?",
+                (_txn_declared_adapter.dump_json(uploaded).decode(), repo, txn_uuid),
+            )
+            self._conn.commit()
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def delete_transaction(self, repo: str, txn_uuid: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM transactions WHERE repo = ? AND txn_uuid = ?", (repo, txn_uuid))
+            self._conn.commit()
 
     # ------------------------------------------------------------------------------------------------------------------
     def close(self) -> None:

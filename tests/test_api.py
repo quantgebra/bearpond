@@ -200,18 +200,6 @@ def test_directory_listing_over_http(api: httpx.Client) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_manifest_is_served_from_the_store_not_the_exports(api: httpx.Client, repo: repository.Repository) -> None:
-    # the exported manifest files are an audit trail, not the source of truth — losing one changes nothing for readers
-    commit_via_api(api, HIVE_PATH, CONTENT)
-    (repo.manifest_root / "manifest-00000001.json").unlink()
-    repo.latest_pointer.unlink()
-
-    response: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/manifest")
-    assert response.status_code == 200
-    assert [f["path"] for f in response.json()["files"]] == [HIVE_PATH]
-
-
-# ----------------------------------------------------------------------------------------------------------------------
 def test_manifest_by_seq_returns_that_version(api: httpx.Client) -> None:
     commit_via_api(api, HIVE_PATH, CONTENT)
     commit_via_api(api, "year=2024/month=03/extra.parquet", b"extra")

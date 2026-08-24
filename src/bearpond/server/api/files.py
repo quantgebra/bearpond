@@ -5,7 +5,7 @@ from starlette.status import HTTP_404_NOT_FOUND
 
 from ... import types
 from .. import metadata_store
-from .. import repository
+from .. import server as server_module
 from . import dependencies
 
 router: APIRouter = APIRouter(prefix="/repos/{repo_name}", tags=["files"], dependencies=[Depends(dependencies.require_auth)])
@@ -27,10 +27,16 @@ class DirectoryListing(BaseModel):
 
 # ----------------------------------------------------------------------------------------------------------------------
 @router.get("/files/{rel_path:path}", response_model=None)
-def get_file(repo_name: str, rel_path: str, limit: int = 1000, cursor: str | None = None) -> DirectoryListing | FileResponse:
+def get_file(
+    repo_name: str,
+    rel_path: str,
+    limit: int = 1000,
+    cursor: str | None = None,
+    server: server_module.Server = Depends(dependencies.get_server),
+) -> DirectoryListing | FileResponse:
     # doubles as a raw file download (what the client's sync/download_file use) and an S3-style prefix+delimiter
     # directory listing (Contents + CommonPrefixes, files paginated via limit/cursor) for browsing and debugging
-    repo: repository.Repository = repository.get_repository(repo_name)
+    repo = server.get_repository(repo_name)
 
     result: DirectoryListing | FileResponse
     current: types.FileMetadata | None = repo.metadata_store.get_file_metadata(rel_path)

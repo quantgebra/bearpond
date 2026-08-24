@@ -373,3 +373,67 @@ else:
 ```
 
 This is about if/else specifically: a guard clause with no else (`if not valid: raise`) is fine — there the negation *is* the exceptional case, and there's no branch for the reader to carry it across. `x is not None` also counts as positive phrasing (it tests "we have a value"), not a negative.
+
+## 20. Cohesive stateful resources become a class
+
+When a domain concept owns multiple related, mutable resources that are initialized together, shared by other entities, and torn down together, represent it as a class. Don't leave the resources as module-level globals accessed through module-level functions that merely pretend to be methods of an invisible object.
+
+```python
+# Not this: a set of globals masquerading as "the server"
+_repos_root: Path | None = None
+_metadata_store: MetadataStore | None = None
+_object_store: ObjectStore | None = None
+_repositories: dict[str, Repository] = {}
+
+def configure(config: ServerConfig) -> None: ...
+def get_repository(name: str) -> Repository: ...
+def create_repository(name: str) -> Repository: ...
+def close() -> None: ...
+
+# This: the concept is explicit, state is encapsulated, and Repository can receive its Server as a collaborator
+class Server:
+    def __init__(self, config: ServerConfig) -> None:
+        self.metadata_store: MetadataStore = SqliteMetadataStore(config.db_path)
+        self.object_store: ObjectStore = ObjectStore(config.object_store_root)
+        self._repos: dict[str, Repository] = {}
+
+    def get_repository(self, name: str) -> Repository: ...
+    def create_repository(self, name: str) -> Repository: ...
+    def close(self) -> None: ...
+```
+
+Signals that a concept wants to be a class:
+
+1. **Multiple pieces of mutable state always travel together** and must be initialized in a specific order.
+2. **A lifecycle** (open/configure, use, close/recover) applies to the whole group atomically.
+3. **Shared resources** are consumed by other domain objects that need a stable place to obtain them.
+4. **You're about to swap implementations** (SQLite ↔ Postgres, local disk ↔ S3) and want the boundary behind a stable object rather than scattered global references.
+5. **Tests repeatedly reconfigure the same bundle** of state, which forces awkward "reset the globals" teardown.
+
+Pure behavior with no state can stay as module functions. A single global constant or configuration flag can stay as module data. But once the concept becomes "the thing that holds and manages these resources," make the thing real.
+
+## 21. Constructor parameters and instance assignments share order
+
+When a constructor takes parameters that become instance variables, assign those variables in the same order the parameters appear. Derived fields are grouped with the parameter they are derived from.
+
+```python
+# Not this: param 4 (obj_store) assigned before param 3 (store)
+def __init__(self, name: str, repo_dir: Path, store: MetadataStore, obj_store: ObjectStore) -> None:
+    self.name = name
+    self.staging_root = repo_dir / "staging"
+    self.manifest_root = repo_dir / "manifests"
+    self.latest_pointer = self.manifest_root / "_latest"
+    self.object_store = obj_store
+    self.metadata_store = store
+
+# This: assignments follow parameter order; derived fields stay with their source parameter
+def __init__(self, name: str, repo_dir: Path, store: MetadataStore, obj_store: ObjectStore) -> None:
+    self.name = name
+    self.staging_root = repo_dir / "staging"
+    self.manifest_root = repo_dir / "manifests"
+    self.latest_pointer = self.manifest_root / "_latest"
+    self.metadata_store = store
+    self.object_store = obj_store
+```
+
+The goal is to make the parameter list, the constructor body, and the object's shape easy to scan together. When dependencies force a different order, keep direct parameter-to-attribute assignments in parameter order and place derived fields with their source.

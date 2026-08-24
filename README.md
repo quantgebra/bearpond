@@ -2,7 +2,7 @@
 
 A small, transactional data lake — a pond, really — where bears (pandas, Polars) come to play.
 
-bearpond is a central data server and sync client for versioned collections of files, built for teams. It gives you the semantics of a [lakehouse](https://www.databricks.com/glossary/data-lakehouse) without the lakehouse machinery.  Bearpond does include content-addressed storage, atomic commits, and point-in-time manifests from one server process, a directory, and SQLite — no Spark, no metastore, no object store.
+bearpond is a central data server and sync client for versioned collections of files, built for teams. It gives you the semantics of a [lakehouse](https://www.databricks.com/glossary/data-lakehouse) without the lakehouse machinery. Bearpond includes content-addressed storage, atomic commits, and point-in-time manifests from one server process, a metadata store, and an object store — no Spark, no metastore. The default setup uses SQLite and local disk; the architecture is aimed at swapping in Postgres and S3 for HA deployments.
 
 ## Who it's for
 
@@ -17,11 +17,11 @@ bearpond is built for a small team with central data: a handful of ETL processes
 
 - **Transactional writes.** Clients add and remove files through an explicit transaction lifecycle: *begin* (declare the change), *upload*, then *commit* or *abort*. A commit is a single atomic metadata transaction — readers never observe a half-applied change, and no-op commits are rejected.
 - **Content-addressed storage.** Every distinct file content is stored exactly once, named by its sha256 (`objects/ab/abcdef…`). The name *is* the content — insertion verifies the hash, so integrity is enforced, not assumed.
-- **Versioned manifests.** Every commit produces a manifest — the full list of files in the lake at that version (`manifest-00000042.json`). Clients read the manifest, never directory listings, and can verify every byte they download.
+- **Versioned manifests.** Every commit produces a manifest — the full list of files in the lake at that version. The metadata store is the source of truth; any seq can be reconstructed on demand. Clients read the manifest, never directory listings, and can verify every byte they download.
 - **Git-style commit chain.** Each commit record carries a `commit_hash` computed over the change, its parent, its timestamp, and its author — so the history is self-certifying and tamper-evident.
 - **Safe pull.** `bearpond pull` maintains a local mirror of the lake in hive-partition layout, fetching only what changed and pruning what was removed — ready for pandas, Polars, DuckDB, or any data tool. Subset pulls let a workspace track only the partitions it needs.
 - **Web UI.** A React interface for browsing repositories, manifests, and commit history is served by the same FastAPI process.
-- **Crash-safe by construction.** Immutable objects plus an atomic SQLite metadata commit mean a crash at any point leaves the lake either exactly on a version or cleanly retryable. Startup reconciles the exported manifests with the store automatically.
+- **Crash-safe by construction.** Immutable objects plus an atomic metadata commit mean a crash at any point leaves the lake either exactly on a version or cleanly retryable. Objects are placed directly in the content-addressed store during upload, so there is no staging state to reconcile on startup.
 
 ## Why bearpond — and the alternatives
 
@@ -35,12 +35,12 @@ The honest comparison for a small team centralizing its data:
 | **LakeFS** | The right semantics (git-for-data), but real operational weight — its own metadata store and gateway — aimed at object-store scale |
 | **Iceberg / DuckLake** | Table-oriented catalogs whose readers need engine/catalog support; more machinery than a versioned file collection needs |
 
-bearpond's side of the trade: atomic all-or-nothing commits across many files, loud 409 conflicts instead of silent corruption, content-verified mirrors, and a tamper-evident hash-chained history — from a single server process you can read end to end.
+bearpond's side of the trade: atomic all-or-nothing commits across many files, loud 409 conflicts instead of silent corruption, content-verified mirrors, and a tamper-evident hash-chained history — from a server process you can read end to end.
 
 ## What bearpond is not
 
 - **A query engine.** The read model is pull-then-query-locally; there is no server-side SQL. At this scale that's a feature — local DuckDB over a pulled mirror is faster than any network query — but it means everyone works from a mirror.
-- **Highly available.** The server is one node. Crashes recover cleanly (SQLite plus the exported manifests), but losing the disk is your backup problem, and downtime pauses commits and pulls.
+- **Highly available.** The default server is one node, but the architecture is stateless: the metadata store and object store are the only shared state, so multiple server processes can run behind a load balancer once Postgres and S3 are configured. SQLite plus local disk is the simple starting point.
 - **A table format.** No schema enforcement or evolution, no `VERSION AS OF` inside your DataFrame library — bearpond versions *files*, not tables. If you need query-engine-integrated time travel, that's Delta or Iceberg.
 
 ## Concepts
@@ -49,7 +49,7 @@ bearpond's side of the trade: atomic all-or-nothing commits across many files, l
 |---|---|
 | **object** | a file's content, stored once under its sha256 in `objects/` |
 | **path** | a file's logical location in the lake, e.g. `year=2024/month=01/part.parquet`. Hive-style `key=value` directories are recommended for subset pulls but not required. |
-| **transaction** | an in-flight unit of work (begin → upload → commit or abort); aborts leave no trace |
+| **transaction** | an in-flight unit of work (begin → upload → commit or abort); aborts drop the transaction state and leave uploaded objects as orphans for GC |
 | **commit** | the permanent record of a committed transaction: `commit_hash`, `seq`, timestamp, author, full file list |
 | **seq** | the lake's version number — increments on every commit |
 | **manifest** | the snapshot of the lake at a seq — what clients consume |
@@ -198,13 +198,12 @@ repos_root/                 # one subdirectory per repository
   bearpond.sqlite           # server-wide metadata store: repo → path → object mapping, commit history
   objects/ab/abcdef…        # server-wide content-addressed object store (the name is the sha256)
   <repo>/
-    staging/<txn_uuid>/     # in-flight uploads, invisible until commit
-    manifests/              # exported audit trail: manifest-*.json, commits/*.json
+    transactions/<txn_uuid>/  # in-flight transaction state (declared/removed/updated/uploaded files)
 ```
 
-The **metadata store** (SQLite) is the system of record: one database per server, with `objects` and `commits` tables scoped by repository. It holds every path ever added with the txn/seq that added and (eventually) removed it, plus the full hash-chained commit history. The manifest files on disk are an export of that state — an audit trail and a rebuild source — not the source of truth themselves. Serving reads from the store, with history retained, is also what makes point-in-time queries possible (any manifest seq can be reconstructed).
+The **metadata store** (SQLite) is the system of record: one database per server, with `objects` and `commits` tables scoped by repository. It holds every path ever added with the txn/seq that added and (eventually) removed it, plus the full hash-chained commit history. Manifests are reconstructed from the store on demand, not exported to disk. Serving reads from the store, with history retained, is what makes point-in-time queries possible (any manifest seq can be reconstructed).
 
-A commit is *content before pointers*: staged files are placed into the object store first (idempotent — the name is the hash), then one atomic SQLite transaction flips every path mapping at once and appends the commit record.
+A commit is *content before pointers*: files are streamed directly to the content-addressed object store during upload (idempotent — the name is the hash), then one atomic metadata transaction flips every path mapping at once and appends the commit record. Aborted transactions leave orphan objects; a background garbage collector reclaims any object not referenced by a retained version.
 
 Layout of this repo:
 
@@ -221,7 +220,7 @@ tests/                # pytest suite (domain, API, client end-to-end)
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest        # 123 tests: domain, API over live HTTP, end-to-end client flows
+python -m pytest        # 115 tests: domain, API over live HTTP, end-to-end client flows
 ```
 
 The web UI lives in `web/` and uses Vite + React + TypeScript. To work on it:
@@ -244,8 +243,8 @@ npm run build           # outputs to src/bearpond/server/static/
 - **Multi-user auth** — per-user tokens and read/write roles (today: single shared bearer token)
 - **Garbage collection** — reclaim objects no longer referenced by any retained version
 - **Retention policies** — how long removed content stays recoverable
-- **`rebuild-db`** — reconstruct the metadata store from the exported manifests/commits
 - **Compaction** — combine smaller files into larger ones by adding new aggregate paths and removing the now-redundant small ones
+- **Pluggable backends** — Postgres metadata store and S3 object store for stateless HA
 - **Point-in-time pull** — `pull --seq N` to mirror the lake as of any version (the store already reconstructs any seq server-side) *(implemented)*
 - **Subset pull** — `pull --query key=value ...` to mirror only files whose path contains the given segments *(implemented)*
 - **Web UI** — React interface for browsing repositories, manifests, and commit history *(scaffolded; admin and user management via the UI is future work)*

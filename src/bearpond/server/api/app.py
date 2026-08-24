@@ -10,7 +10,7 @@ from starlette.status import (
     HTTP_500_INTERNAL_SERVER_ERROR,
 )
 
-from .. import metadata_store, repository, transaction, utils
+from .. import metadata_store, repository, server as server_module, transaction, utils
 from .. import ui as ui_module
 from . import commits, files, manifest, repos, transactions
 
@@ -18,10 +18,8 @@ from . import commits, files, manifest, repos, transactions
 # ----------------------------------------------------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    # reconcile every repo's exported manifests/commit records with its metadata store before accepting traffic,
-    # so the on-disk audit trail is always complete even if a crash interrupted an export
-    for name in repository.list_repositories():
-        repository.get_repository(name).recover()
+    # the metadata store (Postgres/SQLite) is the source of truth and recovers itself; no startup reconciliation is
+    # required now that exported manifest files and staging directories have been removed
     yield
 
 
