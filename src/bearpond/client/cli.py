@@ -60,7 +60,9 @@ def cmd_status(args: argparse.Namespace) -> None:
     client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
     status: bearpond_client.WorkspaceStatus = client.status()
 
-    query_label: str = "full mirror" if not status.query else f"query [{', '.join(status.query)}]"
+    query_label: str = "full mirror" if not status.query else "query [" + " | ".join(
+        " ".join(group) for group in status.query
+    ) + "]"
     print(f"Workspace at manifest-{status.workspace_seq:08d} — {query_label}")
     for path in status.pending:
         print(f"  pending pull:  {path}")
@@ -93,7 +95,7 @@ def cmd_commit(args: argparse.Namespace) -> None:
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_pull(args: argparse.Namespace) -> None:
     client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
-    query: list[str] | None = args.query if args.query is not None else None
+    query: list[list[str]] | None = args.query if args.query is not None else None
     with client.connect(token=args.token) as server:
         client.pull(server, dry_run=args.dry_run, seq=args.seq, query=query)
 
@@ -166,8 +168,10 @@ def main() -> None:
     pull_parser.add_argument(
         "--query",
         nargs="*",
+        action="append",
         default=None,
-        help="Pull only files whose path contains these segments (e.g. --query year=2024 month=01 or --query trades 2024-08-22); "
+        help="Pull only files whose path contains these segments (AND within one --query, OR across repeats: "
+             "--query year=2024 month=01 --query year=2025 month=02); "
              "pass --query with no values to switch back to a full mirror",
     )
     pull_parser.set_defaults(func=cmd_pull)

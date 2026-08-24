@@ -36,7 +36,7 @@ class WorkspaceConfig(BaseModel):
 # everything the workspace knows about how it differs from the lake, from status()
 class WorkspaceStatus(BaseModel):
     workspace_seq: int
-    query: list[str]
+    query: list[list[str]]
     pending: list[str]
     staged_added: list[types.FileMetadata]
     staged_removed: list[types.FileMetadata]
@@ -78,17 +78,17 @@ def _iter_visible_files(root: Path) -> Iterator[Path]:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def _path_matches_query(rel_path: str, query: list[str]) -> bool:
-    # a subset query is a list of terms, all of which must appear as path segments.
+def _path_matches_query(rel_path: str, query: list[list[str]]) -> bool:
+    # a subset query is a list of AND-groups; the path matches if any group matches fully.
     # an empty query matches everything (full mirror).
     if not query:
         return True
     segments: set[str] = set(rel_path.split("/"))
-    return all(term in segments for term in query)
+    return any(all(term in segments for term in group) for group in query)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def _filter_manifest_by_query(manifest: types.Manifest, query: list[str]) -> dict[str, FileState]:
+def _filter_manifest_by_query(manifest: types.Manifest, query: list[list[str]]) -> dict[str, FileState]:
     # the subset of the manifest this workspace is responsible for under the given query
     return {
         f.path: FileState(sha256=f.sha256, size=f.size)
@@ -231,16 +231,22 @@ class BearpondClient:
         self._write_state_file(STAGED_NAME, manifest.model_dump_json(indent=2))
     
     # ------------------------------------------------------------------------------------------------------------------
-    def _load_query(self) -> list[str]:
-        # the hive-predicate filter defining this workspace's current view — empty means full mirror
+    def _load_query(self) -> list[list[str]]:
+        # the hive-predicate filter defining this workspace's current view — empty means full mirror.
+        # the file stores a list of AND-groups that OR together; a flat list[str] from an older workspace is
+        # upgraded to a single group on load.
         query_path: Path = self.workdir / STATE_DIR_NAME / QUERY_NAME
-        result: list[str] = []
+        result: list[list[str]] = []
         if query_path.exists():
-            result = json.loads(query_path.read_text())
+            raw: list = json.loads(query_path.read_text())
+            if raw and isinstance(raw[0], str):
+                result = [raw]
+            else:
+                result = raw
         return result
-    
+
     # ------------------------------------------------------------------------------------------------------------------
-    def _save_query(self, query: list[str]) -> None:
+    def _save_query(self, query: list[list[str]]) -> None:
         self._write_state_file(QUERY_NAME, json.dumps(query, indent=2))
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -530,12 +536,12 @@ class BearpondClient:
         server: server_client.ServerClient,
         dry_run: bool = False,
         seq: int | None = None,
-        query: list[str] | None = None,
+        query: list[list[str]] | None = None,
     ) -> None:
         # a point-in-time pull or a query switch changes the base the workspace represents, which conflicts with an
         # interrupted pull whose pending overlay was computed against a different target
-        saved_query: list[str] = self._load_query()
-        effective_query: list[str] = query if query is not None else saved_query
+        saved_query: list[list[str]] = self._load_query()
+        effective_query: list[list[str]] = query if query is not None else saved_query
         if seq is not None or (query is not None and query != saved_query):
             self._require_no_pending_pull()
             self._require_no_staged_changes()
@@ -564,7 +570,9 @@ class BearpondClient:
         to_download: list[str] = [p for p in target_files if workspace_files.get(p) != target_files[p]]
         to_delete: list[str] = [p for p in previous_pulled if p not in target_files]
         
-        query_label: str = "full mirror" if not effective_query else f"query [{', '.join(effective_query)}]"
+        query_label: str = "full mirror" if not effective_query else "query [" + " | ".join(
+            " ".join(group) for group in effective_query
+        ) + "]"
         print(
             f"manifest-{manifest.seq:08d}: {len(target_files)} files "
             f"({len(to_download)} to download, {len(to_delete)} to delete) — {query_label}"

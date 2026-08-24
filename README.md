@@ -40,7 +40,6 @@ bearpond's side of the trade: atomic all-or-nothing commits across many files, l
 ## What bearpond is not
 
 - **A query engine.** The read model is pull-then-query-locally; there is no server-side SQL. At this scale that's a feature — local DuckDB over a pulled mirror is faster than any network query — but it means everyone works from a mirror.
-- **Highly available.** The default server is one node, but the architecture is stateless: the metadata store and object store are the only shared state, so multiple server processes can run behind a load balancer once Postgres and S3 are configured. SQLite plus local disk is the simple starting point.
 - **A table format.** No schema enforcement or evolution, no `VERSION AS OF` inside your DataFrame library — bearpond versions *files*, not tables. If you need query-engine-integrated time travel, that's Delta or Iceberg.
 
 ## Concepts
@@ -121,6 +120,9 @@ bearpond pull --query month=01
 
 bearpond pull --query month=01 day=15
 # multiple terms are ANDed: the path must contain every segment
+
+bearpond pull --query month=01 --query month=02
+# repeat --query to OR whole groups: paths matching month=01 OR month=02
 
 bearpond pull --query trades 2024-08-22
 # arbitrary paths work too; each term must appear as a /-separated segment
