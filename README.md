@@ -181,12 +181,12 @@ Open `http://localhost:5173/` for live-reload development.
 |---|---|
 | `GET /repos` | list repositories |
 | `POST /repos` | create a repository (`{"name": …}`) |
-| `POST /repos/{repo}/transactions` | begin a transaction (declare added/removed files) |
+| `POST /repos/{repo}/transactions` | begin a transaction (declare added/removed/updated files, plus `user`/`reason`) |
 | `PUT /repos/{repo}/transactions/{txn_uuid}/files/{path}` | upload one declared file's content |
 | `POST /repos/{repo}/transactions/{txn_uuid}/commit` | commit (idempotent — safe to retry) |
 | `DELETE /repos/{repo}/transactions/{txn_uuid}` | abort |
 | `GET /repos/{repo}/transactions/{txn_uuid}` | transaction status (`open` / `committed`) |
-| `GET /repos/{repo}/manifest` | the current manifest (files, sizes, sha256, seq) |
+| `GET /repos/{repo}/manifest` | the current manifest (files, sha256, sizes, seq) |
 | `GET /repos/{repo}/commits` | commit history, newest first (`?limit=&before_seq=`) |
 | `GET /repos/{repo}/files/{path}` | download a file, or list a prefix (`?limit=&cursor=`) |
 

@@ -95,8 +95,8 @@ def begin_transaction(self, files: list[dict]) -> str:
 # This:
 class DeclaredFile(BaseModel):
     path: str
-    size: int
     sha256: str
+    size: int
 
 def begin_transaction(self, files: list[DeclaredFile]) -> str:
     ...
@@ -122,7 +122,7 @@ def load_local_state(target_dir: Path) -> dict[str, SyncedFileState]:
 
 When the same piece of data (e.g. a file's path/size/hash) shows up across multiple structures — a manifest entry, a `TypedDict`, a pydantic model, literal dict/JSON construction — the shared fields are declared and constructed in the same order in every one of them. Pick one canonical order and use it everywhere that shape appears, rather than letting each definition drift independently.
 
-This project's canonical order for a file record is `path, size, sha256`.
+This project's canonical order for a file record is `path, sha256, size`.
 
 ## 8. One file per domain class; its utilities live in that same file
 
@@ -227,15 +227,15 @@ When building a value whose type is a `pydantic.BaseModel`, invoke it as a const
 ```python
 # Not this:
 declared[declared_file.path] = {
-    "size": declared_file.size,
     "sha256": declared_file.sha256,
+    "size": declared_file.size,
     "supersedes": declared_file.supersedes,
 }
 
 # This:
 declared[declared_file.path] = DeclaredMeta(
-    size=declared_file.size,
     sha256=declared_file.sha256,
+    size=declared_file.size,
     supersedes=declared_file.supersedes,
 )
 ```

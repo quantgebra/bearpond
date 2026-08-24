@@ -1,7 +1,5 @@
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel
-
 from .. import types
 
 
@@ -26,21 +24,21 @@ class TransactionConflictError(TransactionError):
 
 
 # ======================================================================================================================
-# size/sha256 for one path, keyed externally by path in the persisted transaction state — distinct from
-# types.FileMetadata, which is the wire-protocol shape and carries its own path field
-class FileMeta(BaseModel):
-    size: int
-    sha256: str
-
-
-# ======================================================================================================================
 # a pure in-memory representation of an in-flight transaction. persistence is handled by the metadata store, so the
 # server remains stateless and transactions survive process restarts. behavior that needs the object or metadata
 # store (upload, commit, abort) lives on Repository, which owns those collaborators.
+#
+# added/removed/updated/uploaded are lists sorted by path — the same shape as the wire TransactionManifest and the
+# persisted CommitRecord, so no dict↔list conversion is needed anywhere along the lifecycle
 @dataclass
 class Transaction:
     txn_uuid: str
-    added: dict[str, FileMeta]
-    removed: dict[str, FileMeta]
-    updated: dict[str, types.UpdatedFileMetadata]
-    uploaded: dict[str, FileMeta] = field(default_factory=dict)
+    # when the transaction was begun, stamped by the server (ISO 8601) — client clocks are never trusted
+    created_at: str
+    added: list[types.FileMetadata]
+    removed: list[types.FileMetadata]
+    updated: list[types.UpdatedFileMetadata]
+    uploaded: list[types.FileMetadata] = field(default_factory=list)
+    # who opened the transaction and why — declared at begin time and recorded on the CommitRecord at commit
+    user: str | None = None
+    reason: str | None = None

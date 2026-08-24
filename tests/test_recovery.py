@@ -25,8 +25,8 @@ def test_record_commit_is_idempotent_by_txn_uuid(repo: repository.Repository) ->
     # record, not fail on the duplicate txn_uuid or bump the seq
     txn: transaction.Transaction = begin_uploaded_txn(repo, {HIVE_PATH: CONTENT})
 
-    first: types.CommitRecord = repo.record_commit(txn.txn_uuid, txn.added, {}, {})
-    second: types.CommitRecord = repo.record_commit(txn.txn_uuid, txn.added, {}, {})
+    first: types.CommitRecord = repo.record_commit(txn.txn_uuid, txn.added, [], [])
+    second: types.CommitRecord = repo.record_commit(txn.txn_uuid, txn.added, [], [])
 
     assert second == first
     assert repo.metadata_store.get_current_seq() == 1

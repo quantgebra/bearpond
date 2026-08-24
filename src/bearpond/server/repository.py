@@ -1,6 +1,9 @@
+import bisect
 import threading
 import uuid
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+from typing import TypeVar
 
 from .. import types
 from . import metadata_store
@@ -9,6 +12,9 @@ from . import transaction
 
 # serializes commits so the metadata commit and cleanup never interleave between transactions
 _commit_lock: threading.Lock = threading.Lock()
+
+# a file record carried in a transaction's sorted lists
+F = TypeVar("F", types.FileMetadata, types.UpdatedFileMetadata)
 
 
 # ======================================================================================================================
@@ -36,26 +42,33 @@ class Repository:
     def record_commit(
         self,
         txn_uuid: str,
-        added: dict[str, transaction.FileMeta],
-        removed: dict[str, transaction.FileMeta],
-        updated: dict[str, types.UpdatedFileMetadata],
+        added: list[types.FileMetadata],
+        removed: list[types.FileMetadata],
+        updated: list[types.UpdatedFileMetadata],
         user: str | None = None,
         reason: str | None = None,
+        created_at: str | None = None,
     ) -> types.CommitRecord:
         # the commit point: one atomic metadata transaction flips every pointer at once. The metadata store is the
         # source of truth; objects were placed during upload, so this call only records the mapping.
         try:
             record: types.CommitRecord = self.metadata_store.commit_changes(
-                txn_uuid,
-                added=[types.FileMetadata(path=p, size=m.size, sha256=m.sha256) for p, m in added.items()],
-                removed=[types.FileMetadata(path=p, size=m.size, sha256=m.sha256) for p, m in removed.items()],
-                updated=list(updated.values()),
-                user=user,
-                reason=reason,
+                txn_uuid, added, removed, updated, user=user, reason=reason, created_at=created_at
             )
         except metadata_store.MetadataConflictError as e:
             raise transaction.TransactionConflictError(str(e)) from e
         return record
+
+    # ------------------------------------------------------------------------------------------------------------------
+    @staticmethod
+    def _sorted_unique(files: list[F], role: str) -> list[F]:
+        # a transaction's file lists are stored sorted by path; sorting surfaces a path named more than once in the
+        # same manifest as an adjacent pair
+        ordered: list[F] = sorted(files, key=lambda f: f.path)
+        for prev, cur in zip(ordered, ordered[1:]):
+            if prev.path == cur.path:
+                raise transaction.TransactionValidationError(f"path {role} more than once: {cur.path}")
+        return ordered
 
     # ------------------------------------------------------------------------------------------------------------------
     def begin_transaction(self, manifest: types.TransactionManifest) -> transaction.Transaction:
@@ -63,95 +76,90 @@ class Repository:
         if not manifest.added and not manifest.removed and not manifest.updated:
             raise transaction.TransactionValidationError("transaction must add, remove, or update at least one file")
 
-        # build the added set, rejecting a path named more than once in the same manifest
-        added: dict[str, transaction.FileMeta] = {}
-        for added_file in manifest.added:
-            if added_file.path in added:
-                raise transaction.TransactionValidationError(f"path added more than once: {added_file.path}")
-            added[added_file.path] = transaction.FileMeta(size=added_file.size, sha256=added_file.sha256)
-
-        # build the removed set, rejecting a path named more than once in the same manifest
-        removed: dict[str, transaction.FileMeta] = {}
-        for removed_file in manifest.removed:
-            if removed_file.path in removed:
-                raise transaction.TransactionValidationError(f"path removed more than once: {removed_file.path}")
-            removed[removed_file.path] = transaction.FileMeta(size=removed_file.size, sha256=removed_file.sha256)
-
-        # build the updated set, rejecting a path named more than once in the same manifest
-        updated: dict[str, types.UpdatedFileMetadata] = {}
-        for updated_file in manifest.updated:
-            if updated_file.path in updated:
-                raise transaction.TransactionValidationError(f"path updated more than once: {updated_file.path}")
-            updated[updated_file.path] = updated_file
+        # the transaction's canonical shape is path-sorted lists, matching the manifest and the commit record
+        added: list[types.FileMetadata] = self._sorted_unique(manifest.added, "added")
+        removed: list[types.FileMetadata] = self._sorted_unique(manifest.removed, "removed")
+        updated: list[types.UpdatedFileMetadata] = self._sorted_unique(manifest.updated, "updated")
 
         # a path can only play one role in a single transaction
-        for overlap_path in set(added) & set(removed):
+        added_paths: set[str] = {f.path for f in added}
+        removed_paths: set[str] = {f.path for f in removed}
+        updated_paths: set[str] = {f.path for f in updated}
+        for overlap_path in added_paths & removed_paths:
             raise transaction.TransactionValidationError(
                 f"path cannot be both added and removed: {overlap_path}"
             )
-        for overlap_path in set(added) & set(updated):
+        for overlap_path in added_paths & updated_paths:
             raise transaction.TransactionValidationError(
                 f"path cannot be both added and updated: {overlap_path}"
             )
-        for overlap_path in set(removed) & set(updated):
+        for overlap_path in removed_paths & updated_paths:
             raise transaction.TransactionValidationError(
                 f"path cannot be both removed and updated: {overlap_path}"
             )
 
         # verify removed paths
-        for rel_path, meta in removed.items():
-            current: types.FileMetadata | None = self.metadata_store.get_file_metadata(rel_path)
+        for removed_file in removed:
+            current: types.FileMetadata | None = self.metadata_store.get_file_metadata(removed_file.path)
             # removed path must correspond to an existing path
             if current is None:
                 raise transaction.TransactionValidationError(
-                    f"cannot remove a path that doesn't exist in the lake: {rel_path}"
+                    f"cannot remove a path that doesn't exist in the lake: {removed_file.path}"
                 )
             # the hash of existing path must match hash specified to be removed
-            if current.sha256 != meta.sha256:
+            if current.sha256 != removed_file.sha256:
                 raise transaction.TransactionConflictError(
-                    f"{rel_path} has changed since it was declared for removal — remove is only safe against the "
+                    f"{removed_file.path} has changed since it was declared for removal — remove is only safe against the "
                     f"exact content that was observed"
                 )
 
         # verify added paths
-        for rel_path, meta in added.items():
-            existing: types.FileMetadata | None = self.metadata_store.get_file_metadata(rel_path)
+        for added_file in added:
+            existing: types.FileMetadata | None = self.metadata_store.get_file_metadata(added_file.path)
             # added path must not already exist in repository
             if existing is not None:
-                if existing.sha256 != meta.sha256:
+                if existing.sha256 != added_file.sha256:
                     raise transaction.TransactionConflictError(
-                        f"{rel_path} already exists in the lake with different content — "
+                        f"{added_file.path} already exists in the lake with different content — "
                         f"remove it before adding new content"
                     )
                 # re-adding identical content would change nothing — a no-op commit is a client bug, not a success
                 raise transaction.TransactionConflictError(
-                    f"{rel_path} already exists in the lake with identical content — re-adding it is a no-op"
+                    f"{added_file.path} already exists in the lake with identical content — re-adding it is a no-op"
                 )
 
         # verify updated paths
-        for rel_path, meta in updated.items():
-            current: types.FileMetadata | None = self.metadata_store.get_file_metadata(rel_path)
+        for updated_file in updated:
+            current: types.FileMetadata | None = self.metadata_store.get_file_metadata(updated_file.path)
             # updated path must correspond to existing file in repository
             if current is None:
                 raise transaction.TransactionValidationError(
-                    f"cannot update a path that doesn't exist in the lake: {rel_path}"
+                    f"cannot update a path that doesn't exist in the lake: {updated_file.path}"
                 )
             # the hash of the existing file must match the expected hash in the transaction
-            if current.sha256 != meta.old_sha256:
+            if current.sha256 != updated_file.old_sha256:
                 raise transaction.TransactionConflictError(
-                    f"{rel_path} has changed since it was declared for update — update is only safe against the "
+                    f"{updated_file.path} has changed since it was declared for update — update is only safe against the "
                     f"exact content that was observed"
                 )
             # the hash of the existing file must NOT match the expected hash in the transaction
-            if meta.old_sha256 == meta.new_sha256:
+            if updated_file.old_sha256 == updated_file.new_sha256:
                 raise transaction.TransactionValidationError(
-                    f"{rel_path} old and new content are identical — updating it is a no-op"
+                    f"{updated_file.path} old and new content are identical — updating it is a no-op"
                 )
 
         # create the transaction in memory, then persist its state to the metadata store so it survives restarts
-        # and can be loaded by any stateless server process
+        # and can be loaded by any stateless server process. created_at is stamped by the server here — the client
+        # never supplies it. user and reason are declared here too, at begin time — they're properties of the
+        # transaction's intent, not of the commit call that finalizes it.
         txn: transaction.Transaction = transaction.Transaction(
-            txn_uuid=uuid.uuid4().hex, added=added, removed=removed, updated=updated
+            txn_uuid=uuid.uuid4().hex,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            added=added,
+            removed=removed,
+            updated=updated,
+            user=manifest.user,
+            reason=manifest.reason,
         )
         self.metadata_store.store_transaction(txn)
         return txn
@@ -164,16 +172,28 @@ class Repository:
         return txn
 
     # ------------------------------------------------------------------------------------------------------------------
+    @staticmethod
+    def _find_by_path(files: list[F], rel_path: str) -> F | None:
+        # the transaction's file lists are sorted by path, so a lookup is a binary search rather than a scan
+        index: int = bisect.bisect_left(files, rel_path, key=lambda f: f.path)
+        result: F | None = None
+        if index < len(files) and files[index].path == rel_path:
+            result = files[index]
+        return result
+
+    # ------------------------------------------------------------------------------------------------------------------
     async def upload_file(self, txn_uuid: str, rel_path: str, chunks: AsyncIterator[bytes]) -> types.FileMetadata:
         txn: transaction.Transaction = self.get_transaction(txn_uuid)
 
         # only files declared as added or updated in the original transaction manifest can be uploaded
-        if rel_path in txn.added:
-            expected_size: int = txn.added[rel_path].size
-            expected_sha256: str = txn.added[rel_path].sha256
-        elif rel_path in txn.updated:
-            expected_size = txn.updated[rel_path].new_size
-            expected_sha256 = txn.updated[rel_path].new_sha256
+        added_hit: types.FileMetadata | None = self._find_by_path(txn.added, rel_path)
+        updated_hit: types.UpdatedFileMetadata | None = self._find_by_path(txn.updated, rel_path)
+        if added_hit is not None:
+            expected_sha256: str = added_hit.sha256
+            expected_size: int = added_hit.size
+        elif updated_hit is not None:
+            expected_sha256 = updated_hit.new_sha256
+            expected_size = updated_hit.new_size
         else:
             raise transaction.TransactionValidationError(f"path was not declared when the transaction was opened: {rel_path}")
 
@@ -186,14 +206,14 @@ class Repository:
 
         # record the upload so commit() can refuse if anything declared is still missing — one row per file,
         # so each upload is a cheap insert rather than a rewrite of the whole transaction record
-        uploaded_file: types.FileMetadata = types.FileMetadata(path=rel_path, size=expected_size, sha256=expected_sha256)
+        uploaded_file: types.FileMetadata = types.FileMetadata(path=rel_path, sha256=expected_sha256, size=expected_size)
         self.metadata_store.record_uploaded_file(txn.txn_uuid, uploaded_file)
 
         # echo back what was stored so the caller can confirm size and hash match
         return uploaded_file
 
     # ------------------------------------------------------------------------------------------------------------------
-    def commit(self, txn_uuid: str, reason: str | None = None) -> types.CommitResponse:
+    def commit(self, txn_uuid: str) -> types.CommitResponse:
         txn: transaction.Transaction | None = self.metadata_store.get_transaction(txn_uuid)
         if txn is None:
             # no transaction state in the store, but a commit record may exist — this is a retry of a commit that
@@ -209,25 +229,27 @@ class Repository:
             )
         else:
             # refuse to commit while any declared file hasn't actually been uploaded yet
-            required_uploads: set[str] = set(txn.added) | set(txn.updated)
-            missing: set[str] = required_uploads - set(txn.uploaded)
+            required_uploads: set[str] = {f.path for f in txn.added} | {f.path for f in txn.updated}
+            missing: set[str] = required_uploads - {f.path for f in txn.uploaded}
             if missing:
                 raise transaction.TransactionValidationError(f"declared files not yet uploaded: {sorted(missing)}")
 
             with _commit_lock:
                 # objects were placed during upload; commit just verifies they are still present before recording
                 # the mapping. A missing object means an upload was lost or cleaned up since begin.
-                for rel_path, meta in txn.added.items():
-                    if not self.object_store.contains_address(meta.sha256):
-                        raise transaction.TransactionConflictError(f"uploaded object missing from store: {rel_path}")
-                for rel_path, meta in txn.updated.items():
-                    if not self.object_store.contains_address(meta.new_sha256):
-                        raise transaction.TransactionConflictError(f"uploaded object missing from store: {rel_path}")
+                for added_file in txn.added:
+                    if not self.object_store.contains_address(added_file.sha256):
+                        raise transaction.TransactionConflictError(f"uploaded object missing from store: {added_file.path}")
+                for updated_file in txn.updated:
+                    if not self.object_store.contains_address(updated_file.new_sha256):
+                        raise transaction.TransactionConflictError(f"uploaded object missing from store: {updated_file.path}")
 
                 # the commit point: one atomic metadata transaction flips every pointer. Idempotent by txn_uuid,
-                # so a client that lost the response can safely retry.
+                # so a client that lost the response can safely retry. user and reason come from the transaction
+                # as declared at begin time.
                 record: types.CommitRecord = self.record_commit(
-                    txn.txn_uuid, txn.added, txn.removed, txn.updated, reason=reason
+                    txn.txn_uuid, txn.added, txn.removed, txn.updated, user=txn.user, reason=txn.reason,
+                    created_at=txn.created_at
                 )
 
                 # the transaction state has served its purpose

@@ -11,17 +11,11 @@ from pydantic import BaseModel, TypeAdapter
 from .. import types
 from . import transaction
 
-# validates/serializes the added/removed FileMetadata lists stored as JSON text in the commits table
+# validates/serializes the added/removed FileMetadata lists stored as JSON text in the commits and transactions tables
 _file_meta_list_adapter: TypeAdapter[list[types.FileMetadata]] = TypeAdapter(list[types.FileMetadata])
 
-# validates/serializes the updated UpdatedFileMetadata list stored as JSON text in the commits table
+# validates/serializes the updated UpdatedFileMetadata list stored as JSON text in the commits and transactions tables
 _updated_meta_list_adapter: TypeAdapter[list[types.UpdatedFileMetadata]] = TypeAdapter(list[types.UpdatedFileMetadata])
-
-# validates/serializes the dict[str, FileMeta] shape used for in-flight transaction state (added/removed/uploaded)
-_txn_file_meta_adapter: TypeAdapter[dict[str, transaction.FileMeta]] = TypeAdapter(dict[str, transaction.FileMeta])
-
-# validates/serializes the dict[str, UpdatedFileMetadata] shape used for in-flight transaction state
-_txn_updated_adapter: TypeAdapter[dict[str, types.UpdatedFileMetadata]] = TypeAdapter(dict[str, types.UpdatedFileMetadata])
 
 
 # ======================================================================================================================
@@ -93,6 +87,7 @@ class ServerMetadataStore(Protocol):
         updated: list[types.UpdatedFileMetadata],
         user: str | None = None,
         reason: str | None = None,
+        created_at: str | None = None,
     ) -> types.CommitRecord: ...
     def get_commit_record(self, repo: str, txn_uuid: str) -> types.CommitRecord | None: ...
     def get_commit_record_list(self, repo: str) -> list[types.CommitRecord]: ...
@@ -142,8 +137,9 @@ class MetadataStore:
         updated: list[types.UpdatedFileMetadata],
         user: str | None = None,
         reason: str | None = None,
+        created_at: str | None = None,
     ) -> types.CommitRecord:
-        return self._store.commit_changes(self._repo, txn_uuid, added, removed, updated, user, reason)
+        return self._store.commit_changes(self._repo, txn_uuid, added, removed, updated, user, reason, created_at)
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_commit_record(self, txn_uuid: str) -> types.CommitRecord | None:
@@ -188,8 +184,8 @@ class SqliteMetadataStore(ServerMetadataStore):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         repo TEXT NOT NULL,
         path TEXT NOT NULL,
-        size INTEGER NOT NULL,
         sha256 TEXT NOT NULL,
+        size INTEGER NOT NULL,
         added_txn TEXT NOT NULL,
         added_seq INTEGER NOT NULL,
         removed_txn TEXT,
@@ -207,6 +203,7 @@ class SqliteMetadataStore(ServerMetadataStore):
         txn_uuid TEXT PRIMARY KEY,
         seq INTEGER NOT NULL,
         committed_at TEXT NOT NULL,
+        created_at TEXT,
         added TEXT NOT NULL,
         removed TEXT NOT NULL,
         updated TEXT NOT NULL,
@@ -220,9 +217,12 @@ class SqliteMetadataStore(ServerMetadataStore):
     CREATE TABLE IF NOT EXISTS transactions (
         repo TEXT NOT NULL,
         txn_uuid TEXT NOT NULL,
+        created_at TEXT NOT NULL,
         added TEXT NOT NULL,
         removed TEXT NOT NULL,
         updated TEXT NOT NULL,
+        user TEXT,
+        reason TEXT,
         PRIMARY KEY (repo, txn_uuid),
         FOREIGN KEY (repo) REFERENCES repos(name)
     );
@@ -234,8 +234,8 @@ class SqliteMetadataStore(ServerMetadataStore):
         repo TEXT NOT NULL,
         txn_uuid TEXT NOT NULL,
         path TEXT NOT NULL,
-        size INTEGER NOT NULL,
         sha256 TEXT NOT NULL,
+        size INTEGER NOT NULL,
         PRIMARY KEY (repo, txn_uuid, path),
         FOREIGN KEY (repo, txn_uuid) REFERENCES transactions(repo, txn_uuid)
     );
@@ -245,18 +245,19 @@ class SqliteMetadataStore(ServerMetadataStore):
     @staticmethod
     def _row_to_commit_record(row: tuple) -> types.CommitRecord:
         # row columns arrive in the same order the model declares them: commit_hash, parent_commit_hash, txn_uuid,
-        # seq, committed_at, added, removed, updated, user, reason
+        # seq, committed_at, created_at, added, removed, updated, user, reason
         return types.CommitRecord(
             commit_hash=row[0],
             parent_commit_hash=row[1],
             txn_uuid=row[2],
             seq=row[3],
             committed_at=row[4],
-            added=_file_meta_list_adapter.validate_json(row[5]),
-            removed=_file_meta_list_adapter.validate_json(row[6]),
-            updated=_updated_meta_list_adapter.validate_json(row[7]),
-            user=row[8],
-            reason=row[9],
+            created_at=row[5],
+            added=_file_meta_list_adapter.validate_json(row[6]),
+            removed=_file_meta_list_adapter.validate_json(row[7]),
+            updated=_updated_meta_list_adapter.validate_json(row[8]),
+            user=row[9],
+            reason=row[10],
         )
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -287,11 +288,11 @@ class SqliteMetadataStore(ServerMetadataStore):
     def get_file_metadata(self, repo: str, path: str) -> types.FileMetadata | None:
         with self._lock:
             row: tuple | None = self._conn.execute(
-                "SELECT size, sha256 FROM objects WHERE repo = ? AND path = ? AND removed_seq IS NULL", (repo, path)
+                "SELECT sha256, size FROM objects WHERE repo = ? AND path = ? AND removed_seq IS NULL", (repo, path)
             ).fetchone()
         result: types.FileMetadata | None = None
         if row is not None:
-            result = types.FileMetadata(path=path, size=row[0], sha256=row[1])
+            result = types.FileMetadata(path=path, sha256=row[0], size=row[1])
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -306,7 +307,7 @@ class SqliteMetadataStore(ServerMetadataStore):
         with self._lock:
             # one row beyond the limit is how we know the page is truncated
             file_rows: list[tuple] = self._conn.execute(
-                "SELECT path, size, sha256 FROM objects "
+                "SELECT path, sha256, size FROM objects "
                 "WHERE repo = ? AND removed_seq IS NULL AND path GLOB ? AND instr(substr(path, ?), '/') = 0 AND path > ? "
                 "ORDER BY path LIMIT ?",
                 (repo, glob_prefix, rest_start, cursor or "", limit + 1),
@@ -320,7 +321,7 @@ class SqliteMetadataStore(ServerMetadataStore):
         truncated: bool = len(file_rows) > limit
         page_rows: list[tuple] = file_rows[:limit]
         return DirectoryPage(
-            files=[types.FileMetadata(path=row[0], size=row[1], sha256=row[2]) for row in page_rows],
+            files=[types.FileMetadata(path=row[0], sha256=row[1], size=row[2]) for row in page_rows],
             directories=[row[0] for row in dir_rows],
             next_cursor=page_rows[-1][0] if truncated and page_rows else None,
         )
@@ -350,16 +351,16 @@ class SqliteMetadataStore(ServerMetadataStore):
             if row is not None:
                 # select all the files that were added before or by seq and have been deleted (yet)
                 rows: list[tuple] = self._conn.execute(
-                    "SELECT path, size, sha256 FROM objects "
+                    "SELECT path, sha256, size FROM objects "
                     "WHERE repo = ? AND added_seq <= ? AND (removed_seq IS NULL OR removed_seq > ?) ORDER BY path",
                     (repo, seq, seq),
                 ).fetchall()
-                
+
                 # creat the Manifest with the selected FileMetadata
                 manifest = types.Manifest(
                     seq=seq,
                     created_at=row[0],
-                    files=[types.FileMetadata(path=r[0], size=r[1], sha256=r[2]) for r in rows],
+                    files=[types.FileMetadata(path=r[0], sha256=r[1], size=r[2]) for r in rows],
                 )
         return manifest
 
@@ -367,7 +368,7 @@ class SqliteMetadataStore(ServerMetadataStore):
     def get_commit_record(self, repo: str, txn_uuid: str) -> types.CommitRecord | None:
         with self._lock:
             row: tuple | None = self._conn.execute(
-                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason "
+                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, created_at, added, removed, updated, user, reason "
                 "FROM commits WHERE repo = ? AND txn_uuid = ?",
                 (repo, txn_uuid),
             ).fetchone()
@@ -386,6 +387,7 @@ class SqliteMetadataStore(ServerMetadataStore):
         updated: list[types.UpdatedFileMetadata],
         user: str | None = None,
         reason: str | None = None,
+        created_at: str | None = None,
     ) -> types.CommitRecord:
         record: types.CommitRecord
         with self._lock:
@@ -404,9 +406,9 @@ class SqliteMetadataStore(ServerMetadataStore):
                     self._conn.execute("INSERT OR IGNORE INTO repos (name) VALUES (?)", (repo,))
 
                     current: dict[str, types.FileMetadata] = {
-                        row[0]: types.FileMetadata(path=row[0], size=row[1], sha256=row[2])
+                        row[0]: types.FileMetadata(path=row[0], sha256=row[1], size=row[2])
                         for row in self._conn.execute(
-                            "SELECT path, size, sha256 FROM objects WHERE repo = ? AND removed_seq IS NULL", (repo,)
+                            "SELECT path, sha256, size FROM objects WHERE repo = ? AND removed_seq IS NULL", (repo,)
                         ).fetchall()
                     }
 
@@ -476,9 +478,9 @@ class SqliteMetadataStore(ServerMetadataStore):
 
                     for added_file in added:
                         self._conn.execute(
-                            "INSERT INTO objects (repo, path, size, sha256, added_txn, added_seq) "
+                            "INSERT INTO objects (repo, path, sha256, size, added_txn, added_seq) "
                             "VALUES (?, ?, ?, ?, ?, ?)",
-                            (repo, added_file.path, added_file.size, added_file.sha256, txn_uuid, seq),
+                            (repo, added_file.path, added_file.sha256, added_file.size, txn_uuid, seq),
                         )
                     for removed_file in removed:
                         self._conn.execute(
@@ -495,14 +497,14 @@ class SqliteMetadataStore(ServerMetadataStore):
                             (txn_uuid, seq, repo, updated_file.path),
                         )
                         self._conn.execute(
-                            "INSERT INTO objects (repo, path, size, sha256, added_txn, added_seq) "
+                            "INSERT INTO objects (repo, path, sha256, size, added_txn, added_seq) "
                             "VALUES (?, ?, ?, ?, ?, ?)",
-                            (repo, updated_file.path, updated_file.new_size, updated_file.new_sha256, txn_uuid, seq),
+                            (repo, updated_file.path, updated_file.new_sha256, updated_file.new_size, txn_uuid, seq),
                         )
                     self._conn.execute(
                         "INSERT INTO commits "
-                        "(repo, commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "(repo, commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, created_at, added, removed, updated, user, reason) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             repo,
                             commit_hash,
@@ -510,6 +512,7 @@ class SqliteMetadataStore(ServerMetadataStore):
                             txn_uuid,
                             seq,
                             committed_at,
+                            created_at,
                             _file_meta_list_adapter.dump_json(added).decode(),
                             _file_meta_list_adapter.dump_json(removed).decode(),
                             _updated_meta_list_adapter.dump_json(updated).decode(),
@@ -528,6 +531,7 @@ class SqliteMetadataStore(ServerMetadataStore):
                     txn_uuid=txn_uuid,
                     seq=seq,
                     committed_at=committed_at,
+                    created_at=created_at,
                     added=added,
                     removed=removed,
                     updated=updated,
@@ -540,7 +544,7 @@ class SqliteMetadataStore(ServerMetadataStore):
     def get_commit_record_list(self, repo: str) -> list[types.CommitRecord]:
         with self._lock:
             rows: list[tuple] = self._conn.execute(
-                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason "
+                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, created_at, added, removed, updated, user, reason "
                 "FROM commits WHERE repo = ? ORDER BY seq, committed_at",
                 (repo,),
             ).fetchall()
@@ -551,7 +555,7 @@ class SqliteMetadataStore(ServerMetadataStore):
         # newest-first history, keyset-paginated by seq — one extra row beyond the limit marks truncation
         with self._lock:
             rows: list[tuple] = self._conn.execute(
-                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, added, removed, updated, user, reason "
+                "SELECT commit_hash, parent_commit_hash, txn_uuid, seq, committed_at, created_at, added, removed, updated, user, reason "
                 "FROM commits WHERE repo = ? AND (? IS NULL OR seq < ?) ORDER BY seq DESC LIMIT ?",
                 (repo, before_seq, before_seq, limit + 1),
             ).fetchall()
@@ -579,13 +583,16 @@ class SqliteMetadataStore(ServerMetadataStore):
     def store_transaction(self, repo: str, txn: transaction.Transaction) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO transactions (repo, txn_uuid, added, removed, updated) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO transactions (repo, txn_uuid, created_at, added, removed, updated, user, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     repo,
                     txn.txn_uuid,
-                    _txn_file_meta_adapter.dump_json(txn.added).decode(),
-                    _txn_file_meta_adapter.dump_json(txn.removed).decode(),
-                    _txn_updated_adapter.dump_json(txn.updated).decode(),
+                    txn.created_at,
+                    _file_meta_list_adapter.dump_json(txn.added).decode(),
+                    _file_meta_list_adapter.dump_json(txn.removed).decode(),
+                    _updated_meta_list_adapter.dump_json(txn.updated).decode(),
+                    txn.user,
+                    txn.reason,
                 ),
             )
             self._conn.commit()
@@ -594,7 +601,7 @@ class SqliteMetadataStore(ServerMetadataStore):
     def get_transaction(self, repo: str, txn_uuid: str) -> transaction.Transaction | None:
         with self._lock:
             row: tuple | None = self._conn.execute(
-                "SELECT added, removed, updated FROM transactions WHERE repo = ? AND txn_uuid = ?",
+                "SELECT created_at, added, removed, updated, user, reason FROM transactions WHERE repo = ? AND txn_uuid = ?",
                 (repo, txn_uuid),
             ).fetchone()
             result: transaction.Transaction | None
@@ -602,17 +609,21 @@ class SqliteMetadataStore(ServerMetadataStore):
                 result = None
             else:
                 uploaded_rows: list[tuple] = self._conn.execute(
-                    "SELECT path, size, sha256 FROM transaction_uploaded_files WHERE repo = ? AND txn_uuid = ?",
+                    "SELECT path, sha256, size FROM transaction_uploaded_files WHERE repo = ? AND txn_uuid = ? ORDER BY path",
                     (repo, txn_uuid),
                 ).fetchall()
                 result = transaction.Transaction(
                     txn_uuid=txn_uuid,
-                    added=_txn_file_meta_adapter.validate_json(row[0]),
-                    removed=_txn_file_meta_adapter.validate_json(row[1]),
-                    updated=_txn_updated_adapter.validate_json(row[2]),
-                    uploaded={
-                        path: transaction.FileMeta(size=size, sha256=sha256) for path, size, sha256 in uploaded_rows
-                    },
+                    created_at=row[0],
+                    added=_file_meta_list_adapter.validate_json(row[1]),
+                    removed=_file_meta_list_adapter.validate_json(row[2]),
+                    updated=_updated_meta_list_adapter.validate_json(row[3]),
+                    uploaded=[
+                        types.FileMetadata(path=path, sha256=sha256, size=size)
+                        for path, sha256, size in uploaded_rows
+                    ],
+                    user=row[4],
+                    reason=row[5],
                 )
         return result
 
@@ -622,8 +633,8 @@ class SqliteMetadataStore(ServerMetadataStore):
         # begin time, so a retry can only ever rewrite the same row
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO transaction_uploaded_files (repo, txn_uuid, path, size, sha256) VALUES (?, ?, ?, ?, ?)",
-                (repo, txn_uuid, file.path, file.size, file.sha256),
+                "INSERT OR REPLACE INTO transaction_uploaded_files (repo, txn_uuid, path, sha256, size) VALUES (?, ?, ?, ?, ?)",
+                (repo, txn_uuid, file.path, file.sha256, file.size),
             )
             self._conn.commit()
 

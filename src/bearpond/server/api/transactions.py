@@ -19,9 +19,9 @@ def begin_transaction(
     txn: transaction.Transaction = server.get_repository(repo_name).begin_transaction(manifest)
     return types.BeginTransactionResponse(
         txn_uuid=txn.txn_uuid,
-        added_files=list(txn.added.keys()),
-        removed_files=list(txn.removed.keys()),
-        updated_files=list(txn.updated.keys()),
+        added_files=[f.path for f in txn.added],
+        removed_files=[f.path for f in txn.removed],
+        updated_files=[f.path for f in txn.updated],
     )
 
 
@@ -49,14 +49,18 @@ def get_transaction_status(
     result: types.TransactionStatus
     try:
         txn: transaction.Transaction = repo.get_transaction(txn_uuid)
-        result = types.TransactionStatus(txn_uuid=txn.txn_uuid, status="open", seq=None)
+        result = types.TransactionStatus(
+            txn_uuid=txn.txn_uuid, status="open", seq=None, created_at=txn.created_at
+        )
     except transaction.TransactionNotFoundError:
         # no transaction state in the store — the transaction either never existed (or was aborted), or already
         # committed; the commit record tells the two apart
         record: types.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
         if record is None:
             raise
-        result = types.TransactionStatus(txn_uuid=record.txn_uuid, status="committed", seq=record.seq)
+        result = types.TransactionStatus(
+            txn_uuid=record.txn_uuid, status="committed", seq=record.seq, created_at=record.created_at
+        )
     return result
 
 
@@ -65,12 +69,12 @@ def get_transaction_status(
 def commit_transaction(
     repo_name: str,
     txn_uuid: str,
-    payload: types.CommitRequest | None = None,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> types.CommitResponse:
     repo: repository.Repository = server.get_repository(repo_name)
-    # Repository.commit answers a retry from the commit record when the transaction state is already gone
-    return repo.commit(txn_uuid, reason=payload.reason if payload is not None else None)
+    # user and reason were declared at begin time; Repository.commit answers a retry from the commit record when
+    # the transaction state is already gone
+    return repo.commit(txn_uuid)
 
 
 # ----------------------------------------------------------------------------------------------------------------------

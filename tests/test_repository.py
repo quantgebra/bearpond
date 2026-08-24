@@ -33,21 +33,21 @@ def test_begin_rejects_empty_manifest(repo: repository.Repository) -> None:
 def test_begin_allows_csv_in_hive_path(repo: repository.Repository) -> None:
     # hive layout is recommended for subset pulls but no longer required
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("year=2024/data.csv", CONTENT)])
-    assert txn.added["year=2024/data.csv"].size == len(CONTENT)
+    assert txn.added[0].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_allows_arbitrary_path(repo: repository.Repository) -> None:
     # paths are no longer required to follow hive-style key=value directories
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("trades/2024-08-22/executions.json", CONTENT)])
-    assert txn.added["trades/2024-08-22/executions.json"].size == len(CONTENT)
+    assert txn.added[0].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_allows_top_level_file(repo: repository.Repository) -> None:
     # a bare filename is also valid
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("part.csv", CONTENT)])
-    assert txn.added["part.csv"].size == len(CONTENT)
+    assert txn.added[0].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -104,11 +104,11 @@ def test_begin_rejects_byte_identical_readd(repo: repository.Repository) -> None
 def test_begin_creates_transaction_state(repo: repository.Repository) -> None:
     meta: types.FileMetadata = conftest.file_meta(HIVE_PATH, CONTENT)
     txn: transaction.Transaction = begin(repo, added=[meta])
-    assert txn.added[HIVE_PATH].sha256 == meta.sha256
+    assert txn.added[0].sha256 == meta.sha256
 
     # the same transaction is reachable by id afterwards, with the same state
     fetched: transaction.Transaction = repo.get_transaction(txn.txn_uuid)
-    assert fetched.added.keys() == txn.added.keys()
+    assert [f.path for f in fetched.added] == [f.path for f in txn.added]
 
 
 # ----------------------------------------------------------------------------------------------------------------------

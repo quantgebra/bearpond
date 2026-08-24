@@ -10,8 +10,8 @@ from pydantic import BaseModel
 # ======================================================================================================================
 class FileMetadata(BaseModel):
     path: str
-    size: int
     sha256: str
+    size: int
 
 
 # ======================================================================================================================
@@ -19,17 +19,26 @@ class FileMetadata(BaseModel):
 # self-describing and the server can verify the update against the exact content the client observed.
 class UpdatedFileMetadata(BaseModel):
     path: str
-    old_size: int
     old_sha256: str
-    new_size: int
+    old_size: int
     new_sha256: str
+    new_size: int
 
 
 # ======================================================================================================================
+# the full declaration of a transaction's intent, sent at begin time: the files it will touch plus who is making
+# the change and why. user and reason are recorded on the CommitRecord when the transaction commits — they belong
+# to the transaction as a whole, not to the commit call that finalizes it.
 class TransactionManifest(BaseModel):
     added: list[FileMetadata] = []
     removed: list[FileMetadata] = []
     updated: list[UpdatedFileMetadata] = []
+    user: str | None = None
+    reason: str | None = None
+    # when the transaction was begun, stamped by the server (ISO 8601) — client clocks are never trusted.
+    # Optional on the wire because the request manifest does not supply it; populated by the server when the
+    # manifest is returned or persisted.
+    created_at: str | None = None
 
 
 # ======================================================================================================================
@@ -38,12 +47,6 @@ class BeginTransactionResponse(BaseModel):
     added_files: list[str]
     removed_files: list[str]
     updated_files: list[str]
-
-
-# ======================================================================================================================
-class CommitRequest(BaseModel):
-    reason: str | None = None  # the commit message — the "why" recorded on the CommitRecord
-    # user arrives with multi-user auth; for now the server records commits with user=None
 
 
 # ======================================================================================================================
@@ -59,6 +62,7 @@ class TransactionStatus(BaseModel):
     txn_uuid: str
     status: Literal["open", "committed"]
     seq: int | None  # the manifest version the commit produced — set only once status is "committed"
+    created_at: str | None = None  # when the transaction was begun, stamped by the server (ISO 8601)
 
 
 # ======================================================================================================================
@@ -83,6 +87,9 @@ class CommitRecord(BaseModel):
     txn_uuid: str
     seq: int
     committed_at: str
+    # when the transaction was begun, stamped by the server (ISO 8601). Optional because commits recorded before
+    # this field was added do not carry it.
+    created_at: str | None = None
     added: list[FileMetadata]
     removed: list[FileMetadata]
     updated: list[UpdatedFileMetadata]

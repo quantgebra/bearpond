@@ -41,7 +41,7 @@ def test_upload_rejects_sha_mismatch_and_leaves_nothing_behind(repo: repository.
     with pytest.raises(transaction.TransactionValidationError, match="sha256 mismatch"):
         conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, b"not the declared content")
 
-    assert repo.get_transaction(txn.txn_uuid).uploaded == {}
+    assert repo.get_transaction(txn.txn_uuid).uploaded == []
     # the object was never placed in the content-addressed store because the stream did not match
     assert not repo.object_store.contains_address(conftest.sha256_hex(b"not the declared content"))
 
@@ -194,10 +194,10 @@ def begin_update(
         updated=[
             types.UpdatedFileMetadata(
                 path=rel_path,
-                old_size=len(old_content),
                 old_sha256=conftest.sha256_hex(old_content),
-                new_size=len(new_content),
+                old_size=len(old_content),
                 new_sha256=conftest.sha256_hex(new_content),
+                new_size=len(new_content),
             )
         ]
     )

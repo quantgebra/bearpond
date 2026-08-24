@@ -21,8 +21,8 @@ CONFIG_NAME = "config.json"
 
 # ======================================================================================================================
 class FileState(NamedTuple):
-    size: int
     sha256: str
+    size: int
 
 
 # ======================================================================================================================
@@ -91,7 +91,7 @@ def _path_matches_query(rel_path: str, query: list[str]) -> bool:
 def _filter_manifest_by_query(manifest: types.Manifest, query: list[str]) -> dict[str, FileState]:
     # the subset of the manifest this workspace is responsible for under the given query
     return {
-        f.path: FileState(size=f.size, sha256=f.sha256)
+        f.path: FileState(sha256=f.sha256, size=f.size)
         for f in manifest.files
         if _path_matches_query(f.path, query)
     }
@@ -199,12 +199,12 @@ class BearpondClient:
         pending_path: Path = self.workdir / STATE_DIR_NAME / PENDING_NAME
         if pending_path.exists():
             raw: dict[str, list] = json.loads(pending_path.read_text())
-            pending = {path: FileState(size=entry[0], sha256=entry[1]) for path, entry in raw.items()}
+            pending = {path: FileState(sha256=entry[0], size=entry[1]) for path, entry in raw.items()}
         return pending
     
     # ------------------------------------------------------------------------------------------------------------------
     def _save_pending(self, pending: dict[str, FileState]) -> None:
-        raw: dict = {path: [entry.size, entry.sha256] for path, entry in pending.items()}
+        raw: dict = {path: [entry.sha256, entry.size] for path, entry in pending.items()}
         self._write_state_file(PENDING_NAME, json.dumps(raw, indent=2))
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -384,7 +384,7 @@ class BearpondClient:
             
             # get the hash and size and create the FileMetadata entry
             sha256, size = server_client.hash_and_size(path)
-            entry: types.FileMetadata = types.FileMetadata(path=rel_path, size=size, sha256=sha256)
+            entry: types.FileMetadata = types.FileMetadata(path=rel_path, sha256=sha256, size=size)
             
             if rel_path in tracked_dict:
                 # a tracked path: adding it means an update (or a cancellation of a pending removal)
@@ -398,10 +398,10 @@ class BearpondClient:
                     staged_removed_dict.pop(rel_path, None)
                     staged_updated_dict[rel_path] = types.UpdatedFileMetadata(
                         path=rel_path,
-                        old_size=tracked_file_state.size,
                         old_sha256=tracked_file_state.sha256,
-                        new_size=size,
+                        old_size=tracked_file_state.size,
                         new_sha256=sha256,
+                        new_size=size,
                     )
             else:
                 # an untracked path: stage it as an add, and clear any pending removal/update of the same path
@@ -454,7 +454,7 @@ class BearpondClient:
                 staged_updated_dict.pop(rel_path, None)
                 observed: FileState = tracked_dict[rel_path]
                 staged_removed_dict[rel_path] = types.FileMetadata(
-                    path=rel_path, size=observed.size, sha256=observed.sha256
+                    path=rel_path, sha256=observed.sha256, size=observed.size
                 )
             else:
                 # nothing in the lake to remove — rm can only mean "cancel a pending add/update"
@@ -491,17 +491,18 @@ class BearpondClient:
             if not local_path.is_file():
                 raise server_client.BearpondError(f"staged file is missing: {rel_path} (re-stage with `bearpond add`)")
         staged_by_path: dict[str, types.FileMetadata] = {f.path: f for f in manifest.added}
-        staged_by_path.update({f.path: types.FileMetadata(path=f.path, size=f.new_size, sha256=f.new_sha256) for f in manifest.updated})
+        staged_by_path.update({f.path: types.FileMetadata(path=f.path, sha256=f.new_sha256, size=f.new_size) for f in manifest.updated})
         current: list[types.FileMetadata] = server_client.ServerClient.declare_files(files)
         drifted: list[str] = [f.path for f in current if staged_by_path[f.path].sha256 != f.sha256]
         if drifted:
             raise server_client.BearpondError(f"modified since staged — re-stage with `bearpond add`: {drifted}")
         
-        txn_uuid: str = server.begin_transaction(manifest.added, manifest.removed, manifest.updated)
+        # the commit message is declared at begin time — it's the transaction's intent, not a commit-call parameter
+        txn_uuid: str = server.begin_transaction(manifest.added, manifest.removed, manifest.updated, reason=message)
         result: types.CommitResponse
         try:
             server.upload_files(txn_uuid, files)
-            result = server.commit(txn_uuid, reason=message)
+            result = server.commit(txn_uuid)
         except Exception:
             # best-effort cleanup — an upload failure or interrupted commit shouldn't leave an orphaned transaction
             server.abort(txn_uuid)
@@ -554,7 +555,7 @@ class BearpondClient:
         # pending merges into the file set, and it's explicit. _tracked_files() uses the saved query because the new
         # query is only persisted once the pull succeeds.
         workspace_files: dict[str, FileState] = {
-            p: FileState(size=f.size, sha256=f.sha256)
+            p: FileState(sha256=f.sha256, size=f.size)
             for p, f in self._tracked_files().items()
         }
         workspace_files.update(self._load_pending())
@@ -593,7 +594,7 @@ class BearpondClient:
                     raise server_client.BearpondError(f"checksum mismatch after fetching {rel_path}")
                 
                 # update and store pending
-                pending[rel_path] = FileState(size=expected_file_state.size, sha256=actual_sha256)
+                pending[rel_path] = FileState(sha256=actual_sha256, size=expected_file_state.size)
                 self._save_pending(pending)
                 print(f"  fetched: {rel_path}")
             

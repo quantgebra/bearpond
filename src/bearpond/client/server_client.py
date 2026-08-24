@@ -64,7 +64,7 @@ class ServerClient:
         declared: list[types.FileMetadata] = []
         for rel_path, local_path in files.items():
             sha256, size = hash_and_size(local_path)
-            declared.append(types.FileMetadata(path=rel_path, size=size, sha256=sha256))
+            declared.append(types.FileMetadata(path=rel_path, sha256=sha256, size=size))
         return declared
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -162,9 +162,12 @@ class ServerClient:
         added: list[types.FileMetadata],
         removed: list[types.FileMetadata] | None = None,
         updated: list[types.UpdatedFileMetadata] | None = None,
+        user: str | None = None,
+        reason: str | None = None,
     ) -> str:
+        # user and reason are declared at begin time — they're the transaction's intent, recorded on the commit
         body: types.TransactionManifest = types.TransactionManifest(
-            added=added, removed=removed or [], updated=updated or []
+            added=added, removed=removed or [], updated=updated or [], user=user, reason=reason
         )
         response: httpx.Response = self._client.post(f"{self._base}/transactions", json=body.model_dump(), headers=self._headers())
         self._raise_for_status(response)
@@ -192,10 +195,10 @@ class ServerClient:
         return results
 
     # ------------------------------------------------------------------------------------------------------------------
-    def commit(self, txn_uuid: str, reason: str | None = None) -> types.CommitResponse:
-        body: types.CommitRequest = types.CommitRequest(reason=reason)
+    def commit(self, txn_uuid: str) -> types.CommitResponse:
+        # no body — the reason was declared at begin time; the commit call only finalizes the transaction
         response: httpx.Response = self._client.post(
-            f"{self._base}/transactions/{txn_uuid}/commit", json=body.model_dump(), headers=self._headers()
+            f"{self._base}/transactions/{txn_uuid}/commit", headers=self._headers()
         )
         self._raise_for_status(response)
         result: types.CommitResponse = types.CommitResponse.model_validate_json(response.text)

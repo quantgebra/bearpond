@@ -28,7 +28,7 @@ def sha256_hex(content: bytes) -> str:
 # ----------------------------------------------------------------------------------------------------------------------
 def file_meta(rel_path: str, content: bytes) -> types.FileMetadata:
     # builds the wire shape a client would send for a file with the given content
-    return types.FileMetadata(path=rel_path, size=len(content), sha256=sha256_hex(content))
+    return types.FileMetadata(path=rel_path, sha256=sha256_hex(content), size=len(content))
 
 
 # ----------------------------------------------------------------------------------------------------------------------

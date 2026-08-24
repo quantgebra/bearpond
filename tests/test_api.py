@@ -108,15 +108,23 @@ def test_commit_retry_returns_the_same_result(api: httpx.Client) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_commit_records_the_reason(api: httpx.Client, repo: repository.Repository) -> None:
-    txn_uuid: str = begin_add(api, HIVE_PATH, CONTENT)
+def test_commit_records_the_user_and_reason(api: httpx.Client, repo: repository.Repository) -> None:
+    # user and reason are declared at begin time — they're the transaction's intent, not commit-call parameters
+    meta: dict = conftest.file_meta(HIVE_PATH, CONTENT).model_dump()
+    begin_response: httpx.Response = api.post(
+        f"/repos/{conftest.REPO_NAME}/transactions",
+        json={"added": [meta], "user": "nightly-etl", "reason": "why we did it"},
+    )
+    assert begin_response.status_code == 200, begin_response.text
+    txn_uuid: str = begin_response.json()["txn_uuid"]
     api.put(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/files/{HIVE_PATH}", content=CONTENT)
 
-    response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit", json={"reason": "why we did it"})
+    response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit")
     assert response.status_code == 200
 
     record: types.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
     assert record is not None
+    assert record.user == "nightly-etl"
     assert record.reason == "why we did it"
 
 
@@ -126,14 +134,22 @@ def test_transaction_status_reports_open_committed_and_unknown(api: httpx.Client
 
     open_response: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}")
     assert open_response.status_code == 200
-    assert open_response.json() == {"txn_uuid": txn_uuid, "status": "open", "seq": None}
+    open_body: dict = open_response.json()
+    assert open_body["txn_uuid"] == txn_uuid
+    assert open_body["status"] == "open"
+    assert open_body["seq"] is None
+    assert open_body["created_at"] is not None
 
     api.put(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/files/{HIVE_PATH}", content=CONTENT)
     api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit")
 
     committed_response: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}")
     assert committed_response.status_code == 200
-    assert committed_response.json() == {"txn_uuid": txn_uuid, "status": "committed", "seq": 1}
+    committed_body: dict = committed_response.json()
+    assert committed_body["txn_uuid"] == txn_uuid
+    assert committed_body["status"] == "committed"
+    assert committed_body["seq"] == 1
+    assert committed_body["created_at"] == open_body["created_at"]
 
     assert api.get(f"/repos/{conftest.REPO_NAME}/transactions/no-such-txn").status_code == 404
 
