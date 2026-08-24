@@ -39,22 +39,11 @@ class Repository:
         self.object_store: object_store.ObjectStore = obj_store
 
     # ------------------------------------------------------------------------------------------------------------------
-    def record_commit(
-        self,
-        txn_uuid: str,
-        added: list[types.FileMetadata],
-        removed: list[types.FileMetadata],
-        updated: list[types.UpdatedFileMetadata],
-        user: str | None = None,
-        reason: str | None = None,
-        created_at: str | None = None,
-    ) -> types.CommitRecord:
+    def record_commit(self, txn: transaction.Transaction) -> types.CommitRecord:
         # the commit point: one atomic metadata transaction flips every pointer at once. The metadata store is the
         # source of truth; objects were placed during upload, so this call only records the mapping.
         try:
-            record: types.CommitRecord = self.metadata_store.commit_changes(
-                txn_uuid, added, removed, updated, user=user, reason=reason, created_at=created_at
-            )
+            record: types.CommitRecord = self.metadata_store.commit_transaction(txn)
         except metadata_store.MetadataConflictError as e:
             raise transaction.TransactionConflictError(str(e)) from e
         return record
@@ -218,7 +207,7 @@ class Repository:
         if txn is None:
             # no transaction state in the store, but a commit record may exist — this is a retry of a commit that
             # already finished (e.g. its response was lost to a crash or timeout), so answer from the record
-            prior: types.CommitRecord | None = self.metadata_store.get_commit_record(txn_uuid)
+            prior: types.CommitRecord | None = self.metadata_store.get_commit_record_by_txn_uuid(txn_uuid)
             if prior is None:
                 raise transaction.TransactionNotFoundError(f"unknown transaction: {txn_uuid}")
             result: types.CommitResponse = types.CommitResponse(
@@ -247,10 +236,7 @@ class Repository:
                 # the commit point: one atomic metadata transaction flips every pointer. Idempotent by txn_uuid,
                 # so a client that lost the response can safely retry. user and reason come from the transaction
                 # as declared at begin time.
-                record: types.CommitRecord = self.record_commit(
-                    txn.txn_uuid, txn.added, txn.removed, txn.updated, user=txn.user, reason=txn.reason,
-                    created_at=txn.created_at
-                )
+                record: types.CommitRecord = self.record_commit(txn)
 
                 # the transaction state has served its purpose
                 self.metadata_store.delete_transaction(txn.txn_uuid)

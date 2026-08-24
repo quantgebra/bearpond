@@ -55,7 +55,7 @@ def get_transaction_status(
     except transaction.TransactionNotFoundError:
         # no transaction state in the store — the transaction either never existed (or was aborted), or already
         # committed; the commit record tells the two apart
-        record: types.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
+        record: types.CommitRecord | None = repo.metadata_store.get_commit_record_by_txn_uuid(txn_uuid)
         if record is None:
             raise
         result = types.TransactionStatus(

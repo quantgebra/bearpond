@@ -122,7 +122,7 @@ def test_commit_records_the_user_and_reason(api: httpx.Client, repo: repository.
     response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit")
     assert response.status_code == 200
 
-    record: types.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
+    record: types.CommitRecord | None = repo.metadata_store.get_commit_record_by_txn_uuid(txn_uuid)
     assert record is not None
     assert record.user == "nightly-etl"
     assert record.reason == "why we did it"

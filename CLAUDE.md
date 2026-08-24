@@ -393,7 +393,7 @@ def close() -> None: ...
 # This: the concept is explicit, state is encapsulated, and Repository can receive its Server as a collaborator
 class Server:
     def __init__(self, config: ServerConfig) -> None:
-        self.metadata_store: MetadataStore = SqliteMetadataStore(config.db_path)
+        self.metadata_store: ServerMetadataStore = SqliteServerMetadataStore(config.db_path)
         self.object_store: ObjectStore = ObjectStore(config.object_store_root)
         self._repos: dict[str, Repository] = {}
 

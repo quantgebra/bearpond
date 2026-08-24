@@ -5,6 +5,7 @@ from . import config
 from . import metadata_store
 from . import object_store
 from . import repository
+from .sqlite_server_metadata_store import SqliteServerMetadataStore
 
 
 # ======================================================================================================================
@@ -18,7 +19,7 @@ class Server:
     # ------------------------------------------------------------------------------------------------------------------
     def __init__(self, server_config: config.ServerConfig) -> None:
         self.config: config.ServerConfig = server_config
-        self.metadata_store: metadata_store.ServerMetadataStore = metadata_store.SqliteMetadataStore(server_config.db_path)
+        self.metadata_store: metadata_store.ServerMetadataStore = SqliteServerMetadataStore(server_config.db_path)
         self.object_store: object_store.ObjectStore = object_store.ObjectStore(server_config.object_store_root)
         self._repos: dict[str, repository.Repository] = {}
 

@@ -2,6 +2,7 @@ import conftest
 from bearpond import types
 from bearpond.server import metadata_store
 from bearpond.server import repository
+from bearpond.server import sqlite_server_metadata_store
 
 PATH_A = "year=2024/month=01/a.parquet"
 PATH_B = "year=2024/month=02/b.parquet"
@@ -107,6 +108,27 @@ def test_get_commit_record_page_paginates_newest_first(repo: repository.Reposito
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_get_commit_record_by_any_key(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {PATH_A: CONTENT_A})
+    record: types.CommitRecord = repo.metadata_store.get_commit_record_list()[0]
+
+    by_txn: types.CommitRecord | None = repo.metadata_store.get_commit_record_by_txn_uuid(record.txn_uuid)
+    by_hash: types.CommitRecord | None = repo.metadata_store.get_commit_record_by_commit_hash(record.commit_hash)
+    by_seq: types.CommitRecord | None = repo.metadata_store.get_commit_record_by_commit_seq(record.seq)
+
+    assert by_txn == record
+    assert by_hash == record
+    assert by_seq == record
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_get_commit_record_by_any_key_returns_none_for_unknown(repo: repository.Repository) -> None:
+    assert repo.metadata_store.get_commit_record_by_txn_uuid("no-such-txn") is None
+    assert repo.metadata_store.get_commit_record_by_commit_hash("0" * 64) is None
+    assert repo.metadata_store.get_commit_record_by_commit_seq(999) is None
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_get_manifest_created_at_matches_its_commit(repo: repository.Repository) -> None:
     conftest.commit_files(repo, {PATH_A: CONTENT_A})
     conftest.commit_files(repo, {PATH_B: CONTENT_B})
@@ -141,7 +163,7 @@ def test_commit_hash_is_self_certifying(repo: repository.Repository) -> None:
     conftest.commit_files(repo, {PATH_A: CONTENT_A})
 
     record: types.CommitRecord | None = repo.metadata_store.get_commit_record_list()[0]
-    recomputed: str = metadata_store.compute_commit_hash(
+    recomputed: str = sqlite_server_metadata_store.compute_commit_hash(
         record.parent_commit_hash,
         record.seq,
         record.committed_at,
@@ -161,10 +183,10 @@ def test_commit_hash_ignores_added_and_removed_order() -> None:
     removed: list[types.FileMetadata] = [conftest.file_meta("year=2023/x.parquet", b"x"), conftest.file_meta("year=2023/y.parquet", b"y")]
     updated: list[types.UpdatedFileMetadata] = []
 
-    forward: str = metadata_store.compute_commit_hash(
+    forward: str = sqlite_server_metadata_store.compute_commit_hash(
         None, 1, "2026-01-01T00:00:00+00:00", added, removed, updated, None, None
     )
-    shuffled: str = metadata_store.compute_commit_hash(
+    shuffled: str = sqlite_server_metadata_store.compute_commit_hash(
         None, 1, "2026-01-01T00:00:00+00:00", list(reversed(added)), list(reversed(removed)), list(reversed(updated)), None, None
     )
     assert forward == shuffled
