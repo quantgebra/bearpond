@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 
 from ... import types
-from .. import metadata_store
+from .. import repository
 from .. import server as server_module
 from .. import transaction
 from . import dependencies
@@ -19,7 +19,7 @@ def begin_transaction(
     txn: transaction.Transaction = server.get_repository(repo_name).begin_transaction(manifest)
     return types.BeginTransactionResponse(
         txn_uuid=txn.txn_uuid,
-        added_files=list(txn.declared.keys()),
+        added_files=list(txn.added.keys()),
         removed_files=list(txn.removed.keys()),
         updated_files=list(txn.updated.keys()),
     )
@@ -34,8 +34,8 @@ async def upload_file(
     request: Request,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> types.FileMetadata:
-    txn: transaction.Transaction = server.get_repository(repo_name).get_transaction(txn_uuid)
-    return await txn.upload_file(rel_path, request.stream())
+    repo: repository.Repository = server.get_repository(repo_name)
+    return await repo.upload_file(txn_uuid, rel_path, request.stream())
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -45,7 +45,7 @@ def get_transaction_status(
     txn_uuid: str,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> types.TransactionStatus:
-    repo = server.get_repository(repo_name)
+    repo: repository.Repository = server.get_repository(repo_name)
     result: types.TransactionStatus
     try:
         txn: transaction.Transaction = repo.get_transaction(txn_uuid)
@@ -68,24 +68,9 @@ def commit_transaction(
     payload: types.CommitRequest | None = None,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> types.CommitResponse:
-    repo = server.get_repository(repo_name)
-    result: types.CommitResponse
-    try:
-        txn: transaction.Transaction = repo.get_transaction(txn_uuid)
-        result = txn.commit(reason=payload.reason if payload is not None else None)
-    except transaction.TransactionNotFoundError:
-        # no transaction state in the store, but a commit record exists — this is a retry of a commit that already
-        # finished (e.g. its response was lost to a crash or timeout), so answer from the record instead of failing
-        record: types.CommitRecord | None = repo.metadata_store.get_commit_record(txn_uuid)
-        if record is None:
-            raise
-        result = types.CommitResponse(
-            seq=record.seq,
-            files_added_count=len(record.added),
-            files_removed_count=len(record.removed),
-            files_updated_count=len(record.updated),
-        )
-    return result
+    repo: repository.Repository = server.get_repository(repo_name)
+    # Repository.commit answers a retry from the commit record when the transaction state is already gone
+    return repo.commit(txn_uuid, reason=payload.reason if payload is not None else None)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -95,5 +80,4 @@ def abort_transaction(
     txn_uuid: str,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> None:
-    txn: transaction.Transaction = server.get_repository(repo_name).get_transaction(txn_uuid)
-    txn.abort()
+    server.get_repository(repo_name).abort(txn_uuid)

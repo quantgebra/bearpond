@@ -15,7 +15,7 @@ def begin_uploaded_txn(repo: repository.Repository, files: dict[str, bytes]) -> 
     added: list[types.FileMetadata] = [conftest.file_meta(path, content) for path, content in files.items()]
     txn: transaction.Transaction = repo.begin_transaction(types.TransactionManifest(added=added))
     for path, content in files.items():
-        conftest.upload_bytes(txn, path, content)
+        conftest.upload_bytes(repo, txn.txn_uuid, path, content)
     return txn
 
 
@@ -25,8 +25,8 @@ def test_record_commit_is_idempotent_by_txn_uuid(repo: repository.Repository) ->
     # record, not fail on the duplicate txn_uuid or bump the seq
     txn: transaction.Transaction = begin_uploaded_txn(repo, {HIVE_PATH: CONTENT})
 
-    first: types.CommitRecord = repo.record_commit(txn.txn_uuid, txn.declared, {}, {})
-    second: types.CommitRecord = repo.record_commit(txn.txn_uuid, txn.declared, {}, {})
+    first: types.CommitRecord = repo.record_commit(txn.txn_uuid, txn.added, {}, {})
+    second: types.CommitRecord = repo.record_commit(txn.txn_uuid, txn.added, {}, {})
 
     assert second == first
     assert repo.metadata_store.get_current_seq() == 1
@@ -37,7 +37,7 @@ def test_orphaned_object_is_harmless(repo: repository.Repository) -> None:
     # an upload followed by an abort leaves the object in the store unreferenced — a future GC reclaims it, and
     # the lake simply doesn't know about it in the meantime
     txn: transaction.Transaction = begin_uploaded_txn(repo, {HIVE_PATH: CONTENT})
-    txn.abort()
+    repo.abort(txn.txn_uuid)
 
     assert repo.object_store.contains_address(conftest.sha256_hex(CONTENT))
     assert conftest.current_manifest(repo) is None

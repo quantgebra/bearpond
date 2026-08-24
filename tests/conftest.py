@@ -37,8 +37,8 @@ def commit_files(repo: repository.Repository, files: dict[str, bytes]) -> types.
     added: list[types.FileMetadata] = [file_meta(path, content) for path, content in files.items()]
     txn: transaction.Transaction = repo.begin_transaction(types.TransactionManifest(added=added))
     for path, content in files.items():
-        upload_bytes(txn, path, content)
-    return txn.commit()
+        upload_bytes(repo, txn.txn_uuid, path, content)
+    return repo.commit(txn.txn_uuid)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -46,7 +46,7 @@ def remove_files(repo: repository.Repository, files: dict[str, bytes]) -> types.
     # a removal-only transaction over files known to be in the lake with the given content
     removed: list[types.FileMetadata] = [file_meta(path, content) for path, content in files.items()]
     txn: transaction.Transaction = repo.begin_transaction(types.TransactionManifest(removed=removed))
-    return txn.commit()
+    return repo.commit(txn.txn_uuid)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -68,9 +68,9 @@ async def one_chunk_stream(data: bytes) -> AsyncIterator[bytes]:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def upload_bytes(txn: transaction.Transaction, rel_path: str, data: bytes) -> types.FileMetadata:
-    # Transaction.upload_file is async (it streams the request body); tests drive it synchronously
-    return asyncio.run(txn.upload_file(rel_path, one_chunk_stream(data)))
+def upload_bytes(repo: repository.Repository, txn_uuid: str, rel_path: str, data: bytes) -> types.FileMetadata:
+    # Repository.upload_file is async (it streams the request body); tests drive it synchronously
+    return asyncio.run(repo.upload_file(txn_uuid, rel_path, one_chunk_stream(data)))
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -127,7 +127,6 @@ def repo(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[repositor
     monkeypatch.delenv("BEARPOND_TOKEN", raising=False)
     srv: server_module.Server = server_module.configure(
         config.ServerConfig(
-            repos_root=repo_root,
             db_path=repo_root / "bearpond.sqlite",
             object_store_root=repo_root / "objects",
         )

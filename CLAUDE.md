@@ -437,3 +437,27 @@ def __init__(self, name: str, repo_dir: Path, store: MetadataStore, obj_store: O
 ```
 
 The goal is to make the parameter list, the constructor body, and the object's shape easy to scan together. When dependencies force a different order, keep direct parameter-to-attribute assignments in parameter order and place derived fields with their source.
+
+## 22. Pass the domain object, not its decomposed fields
+
+When a method operates on a domain concept that already has a named class (e.g. `Transaction`), pass the object itself rather than pulling its fields apart and sending them as separate parameters. The caller already has the object; decomposing it at the API boundary adds noise, invites parameter-order bugs, and makes later additions to the concept painful.
+
+```python
+# Not this:
+self.metadata_store.create_transaction(txn.txn_uuid, txn.added, txn.removed, txn.updated)
+
+# This:
+self.metadata_store.store_transaction(txn)
+```
+
+The same applies when updating state derived from the object:
+
+```python
+# Not this:
+self.repo.metadata_store.save_transaction_uploaded(self.txn_uuid, self.uploaded)
+
+# This:
+self.repo.metadata_store.save_transaction_uploaded(self)
+```
+
+**Exception:** operations that are purely about identity — e.g. `delete_transaction(txn_uuid)` or `get_transaction(txn_uuid)` — legitimately take only the identifier because the object does not yet exist (or no longer exists) on the called side. Once the callee needs the object's state, pass the object.

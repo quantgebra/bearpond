@@ -64,11 +64,12 @@ Requires Python 3.11+.
 pip install bearpond   # or: pip install -e . from a clone
 ```
 
-**Run the server.** Create a config directory with a `server.yaml` pointing at a *repos root* — one server hosts many repositories, one subdirectory each:
+**Run the server.** Create a config directory with a `server.yaml` pointing at the server's two storage locations — one server hosts many repositories, all sharing one metadata database and one object store:
 
 ```yaml
-# relative paths resolve against this file's directory
-repos_root: ../my-ponds
+# relative paths resolve against this file's directory; these are also the defaults
+db_path: bearpond.sqlite
+object_store_root: objects
 ```
 
 ```bash
@@ -194,11 +195,9 @@ Errors are JSON `{"detail": …}` with sensible statuses: 400 invalid, 401 unaut
 ## How it works
 
 ```
-repos_root/                 # one subdirectory per repository
-  bearpond.sqlite           # server-wide metadata store: repo → path → object mapping, commit history
-  objects/ab/abcdef…        # server-wide content-addressed object store (the name is the sha256)
-  <repo>/
-    transactions/<txn_uuid>/  # in-flight transaction state (declared/removed/updated/uploaded files)
+bearpond.sqlite             # server-wide metadata store: repo → path → object mapping, hash-chained commit
+                            # history, and in-flight transaction state (added/removed/updated/uploaded files)
+objects/ab/abcdef…          # server-wide content-addressed object store (the name is the sha256)
 ```
 
 The **metadata store** (SQLite) is the system of record: one database per server, with `objects` and `commits` tables scoped by repository. It holds every path ever added with the txn/seq that added and (eventually) removed it, plus the full hash-chained commit history. Manifests are reconstructed from the store on demand, not exported to disk. Serving reads from the store, with history retained, is what makes point-in-time queries possible (any manifest seq can be reconstructed).

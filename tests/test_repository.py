@@ -33,21 +33,21 @@ def test_begin_rejects_empty_manifest(repo: repository.Repository) -> None:
 def test_begin_allows_csv_in_hive_path(repo: repository.Repository) -> None:
     # hive layout is recommended for subset pulls but no longer required
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("year=2024/data.csv", CONTENT)])
-    assert txn.declared["year=2024/data.csv"].size == len(CONTENT)
+    assert txn.added["year=2024/data.csv"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_allows_arbitrary_path(repo: repository.Repository) -> None:
     # paths are no longer required to follow hive-style key=value directories
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("trades/2024-08-22/executions.json", CONTENT)])
-    assert txn.declared["trades/2024-08-22/executions.json"].size == len(CONTENT)
+    assert txn.added["trades/2024-08-22/executions.json"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_begin_allows_top_level_file(repo: repository.Repository) -> None:
     # a bare filename is also valid
     txn: transaction.Transaction = begin(repo, added=[conftest.file_meta("part.csv", CONTENT)])
-    assert txn.declared["part.csv"].size == len(CONTENT)
+    assert txn.added["part.csv"].size == len(CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -104,11 +104,11 @@ def test_begin_rejects_byte_identical_readd(repo: repository.Repository) -> None
 def test_begin_creates_transaction_state(repo: repository.Repository) -> None:
     meta: types.FileMetadata = conftest.file_meta(HIVE_PATH, CONTENT)
     txn: transaction.Transaction = begin(repo, added=[meta])
-    assert txn.declared[HIVE_PATH].sha256 == meta.sha256
+    assert txn.added[HIVE_PATH].sha256 == meta.sha256
 
     # the same transaction is reachable by id afterwards, with the same state
     fetched: transaction.Transaction = repo.get_transaction(txn.txn_uuid)
-    assert fetched.declared.keys() == txn.declared.keys()
+    assert fetched.added.keys() == txn.added.keys()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -126,7 +126,6 @@ def test_latest_is_none_on_fresh_repo(repo: repository.Repository) -> None:
 def test_multiple_repos_share_one_db_but_remain_isolated(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     srv: server_module.Server = server_module.configure(
         config.ServerConfig(
-            repos_root=repo_root,
             db_path=repo_root / "bearpond.sqlite",
             object_store_root=repo_root / "objects",
         )
@@ -153,7 +152,6 @@ def test_multiple_repos_share_one_db_but_remain_isolated(repo_root: Path, monkey
 def test_multiple_repos_share_one_object_store(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     srv: server_module.Server = server_module.configure(
         config.ServerConfig(
-            repos_root=repo_root,
             db_path=repo_root / "bearpond.sqlite",
             object_store_root=repo_root / "objects",
         )

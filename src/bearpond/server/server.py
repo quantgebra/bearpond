@@ -20,34 +20,31 @@ class Server:
         self.config: config.ServerConfig = server_config
         self.metadata_store: metadata_store.ServerMetadataStore = metadata_store.SqliteMetadataStore(server_config.db_path)
         self.object_store: object_store.ObjectStore = object_store.ObjectStore(server_config.object_store_root)
-        self._repos_root: Path = server_config.repos_root
         self._repos: dict[str, repository.Repository] = {}
 
     # ------------------------------------------------------------------------------------------------------------------
     def _repo_view(self, name: str) -> metadata_store.MetadataStore:
-        return metadata_store.RepoMetadataStoreView(name, self.metadata_store)
+        return metadata_store.MetadataStore(name, self.metadata_store)
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_repository(self, name: str) -> repository.Repository:
         if name not in self._repos:
             if not self._REPO_NAME.match(name):
                 raise repository.RepositoryNotFoundError(f"invalid repository name: {name}")
-            repo_dir: Path = self._repos_root / name
-            if not repo_dir.is_dir():
+            # a repository exists iff it is registered in the metadata store — there is no on-disk repo directory
+            if name not in self.metadata_store.list_repos():
                 raise repository.RepositoryNotFoundError(f"unknown repository: {name}")
-            self._repos[name] = repository.Repository(name, repo_dir, self._repo_view(name), self.object_store)
+            self._repos[name] = repository.Repository(name, self._repo_view(name), self.object_store)
         return self._repos[name]
 
     # ------------------------------------------------------------------------------------------------------------------
     def create_repository(self, name: str) -> repository.Repository:
         if not self._REPO_NAME.match(name):
             raise repository.InvalidRepositoryNameError(f"invalid repository name: {name}")
-        repo_dir: Path = self._repos_root / name
-        if repo_dir.exists():
+        if name in self.metadata_store.list_repos():
             raise repository.RepositoryExistsError(f"repository already exists: {name}")
-        repo_dir.mkdir(parents=True)
         self.metadata_store.register_repo(name)
-        self._repos[name] = repository.Repository(name, repo_dir, self._repo_view(name), self.object_store)
+        self._repos[name] = repository.Repository(name, self._repo_view(name), self.object_store)
         return self._repos[name]
 
     # ------------------------------------------------------------------------------------------------------------------
