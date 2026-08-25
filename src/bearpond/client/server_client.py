@@ -2,6 +2,7 @@ import hashlib
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 
@@ -17,8 +18,14 @@ class BearpondError(Exception):
     pass
 
 
+# ======================================================================================================================
+class HashAndSize(NamedTuple):
+    sha256: str
+    size: int
+
+
 # ----------------------------------------------------------------------------------------------------------------------
-def hash_and_size(local_path: Path) -> tuple[str, int]:
+def hash_and_size(local_path: Path) -> HashAndSize:
     # streams the file in chunks rather than reading it whole — files here can be multiple GB
     digest: hashlib._Hash = hashlib.sha256()
     size: int = 0
@@ -26,7 +33,7 @@ def hash_and_size(local_path: Path) -> tuple[str, int]:
         for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
             digest.update(chunk)
             size += len(chunk)
-    return digest.hexdigest(), size
+    return HashAndSize(sha256=digest.hexdigest(), size=size)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -63,8 +70,8 @@ class ServerClient:
         # of hive-relative path to local file path
         declared: list[types.FileMetadata] = []
         for rel_path, local_path in files.items():
-            sha256, size = hash_and_size(local_path)
-            declared.append(types.FileMetadata(path=rel_path, sha256=sha256, size=size))
+            hashed: HashAndSize = hash_and_size(local_path)
+            declared.append(types.FileMetadata(path=rel_path, sha256=hashed.sha256, size=hashed.size))
         return declared
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -116,9 +123,13 @@ class ServerClient:
         response: httpx.Response = self._client.get(f"{self._base}/manifest", params=params, headers=self._headers())
 
         manifest: types.Manifest
-        if seq is None and response.status_code == 404:
-            # nothing has ever been committed to this lake yet — a legitimate empty state, not an error
-            manifest = types.Manifest(seq=0, created_at=None, files=[])
+        if response.status_code == 404:
+            if seq is None:
+                # nothing has ever been committed to this lake yet — a legitimate empty state, not an error
+                manifest = types.Manifest(seq=0, created_at=None, files=[])
+            else:
+                # a missing manifest for an explicitly requested seq is a real 404 — raise it like any other error
+                self._raise_for_status(response)
         else:
             self._raise_for_status(response)
             manifest = types.Manifest.model_validate_json(response.text)
@@ -157,19 +168,9 @@ class ServerClient:
     # --- transaction lifecycle --------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------
-    def begin_transaction(
-        self,
-        added: list[types.FileMetadata],
-        removed: list[types.FileMetadata] | None = None,
-        updated: list[types.UpdatedFileMetadata] | None = None,
-        user: str | None = None,
-        reason: str | None = None,
-    ) -> str:
-        # user and reason are declared at begin time — they're the transaction's intent, recorded on the commit
-        body: types.TransactionManifest = types.TransactionManifest(
-            added=added, removed=removed or [], updated=updated or [], user=user, reason=reason
-        )
-        response: httpx.Response = self._client.post(f"{self._base}/transactions", json=body.model_dump(), headers=self._headers())
+    def begin_transaction(self, manifest: types.TransactionManifest) -> str:
+        # user and reason ride on the manifest — they're the transaction's intent, declared at begin time
+        response: httpx.Response = self._client.post(f"{self._base}/transactions", json=manifest.model_dump(), headers=self._headers())
         self._raise_for_status(response)
         result: types.BeginTransactionResponse = types.BeginTransactionResponse.model_validate_json(
             response.text

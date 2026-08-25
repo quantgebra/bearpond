@@ -8,8 +8,8 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from .. import types
+from . import server_metadata_store
 from . import transaction
-from .server_metadata_store import DirectoryPage, MetadataConflictError, ServerMetadataStore
 
 # validates/serializes the added/removed FileMetadata lists stored as JSON text in the commits and transactions tables
 _file_meta_list_adapter: TypeAdapter[list[types.FileMetadata]] = TypeAdapter(list[types.FileMetadata])
@@ -47,7 +47,7 @@ def compute_commit_hash(
 
 
 # ======================================================================================================================
-class SqliteServerMetadataStore(ServerMetadataStore):
+class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
 
     # one database per server. each table carries a repo column so multiple repositories can share the same file.
     # seq remains per-repo, and txn_uuid is globally unique.
@@ -172,7 +172,7 @@ class SqliteServerMetadataStore(ServerMetadataStore):
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
-    def list_directory(self, repo: str, prefix: str, limit: int, cursor: str | None = None) -> "DirectoryPage":
+    def list_directory(self, repo: str, prefix: str, limit: int, cursor: str | None = None) -> "server_metadata_store.DirectoryPage":
         # S3-style prefix+delimiter ("/") listing over the live mapping: files directly under the prefix, and the
         # distinct immediate subdirectories rolled up in sqlite (the standard's Contents + CommonPrefixes).
         # GLOB rather than LIKE — LIKE is case-insensitive for ASCII in sqlite (wrong for paths), and a
@@ -196,7 +196,7 @@ class SqliteServerMetadataStore(ServerMetadataStore):
 
         truncated: bool = len(file_rows) > limit
         page_rows: list[tuple] = file_rows[:limit]
-        return DirectoryPage(
+        return server_metadata_store.DirectoryPage(
             files=[types.FileMetadata(path=row[0], sha256=row[1], size=row[2]) for row in page_rows],
             directories=[row[0] for row in dir_rows],
             next_cursor=page_rows[-1][0] if truncated and page_rows else None,
@@ -295,22 +295,22 @@ class SqliteServerMetadataStore(ServerMetadataStore):
                     removed_paths: set[str] = {f.path for f in txn.removed}
                     updated_paths: set[str] = {f.path for f in txn.updated}
                     for path in added_paths & removed_paths:
-                        raise MetadataConflictError(f"path cannot be both added and removed: {path}")
+                        raise server_metadata_store.MetadataConflictError(f"path cannot be both added and removed: {path}")
                     for path in added_paths & updated_paths:
-                        raise MetadataConflictError(f"path cannot be both added and updated: {path}")
+                        raise server_metadata_store.MetadataConflictError(f"path cannot be both added and updated: {path}")
                     for path in removed_paths & updated_paths:
-                        raise MetadataConflictError(f"path cannot be both removed and updated: {path}")
+                        raise server_metadata_store.MetadataConflictError(f"path cannot be both removed and updated: {path}")
 
                     # an added path must not be live at all — different content requires a remove first, identical
                     # content is a no-op, and both are rejected: every recorded commit changes the lake by construction
                     for added_file in txn.added:
                         if added_file.path in current:
                             if current[added_file.path].sha256 != added_file.sha256:
-                                raise MetadataConflictError(
+                                raise server_metadata_store.MetadataConflictError(
                                     f"{added_file.path} already exists in the lake with different content — "
                                     f"remove it before adding new content"
                                 )
-                            raise MetadataConflictError(
+                            raise server_metadata_store.MetadataConflictError(
                                 f"{added_file.path} already exists in the lake with identical content — "
                                 f"re-adding it is a no-op"
                             )
@@ -318,9 +318,9 @@ class SqliteServerMetadataStore(ServerMetadataStore):
                     # a removal is only safe against the exact content the client observed when it decided to remove
                     for removed_file in txn.removed:
                         if removed_file.path not in current:
-                            raise MetadataConflictError(f"path to remove no longer exists: {removed_file.path}")
+                            raise server_metadata_store.MetadataConflictError(f"path to remove no longer exists: {removed_file.path}")
                         if current[removed_file.path].sha256 != removed_file.sha256:
-                            raise MetadataConflictError(
+                            raise server_metadata_store.MetadataConflictError(
                                 f"{removed_file.path} has changed since it was declared for removal — "
                                 f"remove is only safe against the exact content that was observed"
                             )
@@ -329,14 +329,14 @@ class SqliteServerMetadataStore(ServerMetadataStore):
                     # actually be different — otherwise the commit would be a no-op
                     for updated_file in txn.updated:
                         if updated_file.path not in current:
-                            raise MetadataConflictError(f"path to update no longer exists: {updated_file.path}")
+                            raise server_metadata_store.MetadataConflictError(f"path to update no longer exists: {updated_file.path}")
                         if current[updated_file.path].sha256 != updated_file.old_sha256:
-                            raise MetadataConflictError(
+                            raise server_metadata_store.MetadataConflictError(
                                 f"{updated_file.path} has changed since it was declared for update — "
                                 f"update is only safe against the exact content that was observed"
                             )
                         if updated_file.old_sha256 == updated_file.new_sha256:
-                            raise MetadataConflictError(
+                            raise server_metadata_store.MetadataConflictError(
                                 f"{updated_file.path} old and new content are identical — updating it is a no-op"
                             )
 

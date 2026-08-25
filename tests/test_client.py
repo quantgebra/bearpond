@@ -1,6 +1,6 @@
 import argparse
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -18,7 +18,7 @@ CONTENT_A = b"alpha parquet bytes"
 CONTENT_B = b"beta parquet bytes"
 
 
-# ======================================================================================================================
+# ----------------------------------------------------------------------------------------------------------------------
 @pytest.fixture
 def source_dir(tmp_path: Path) -> Path:
     # a local tree mirroring the target hive layout, like the kind a workspace's add would stage
@@ -30,7 +30,7 @@ def source_dir(tmp_path: Path) -> Path:
     return root
 
 
-# ======================================================================================================================
+# ----------------------------------------------------------------------------------------------------------------------
 @pytest.fixture
 def client(live_server: str) -> Iterator[server_client.ServerClient]:
     with server_client.ServerClient(live_server, conftest.REPO_NAME) as active_client:
@@ -46,7 +46,7 @@ def commit_source_dir(client: server_client.ServerClient, source_dir: Path) -> t
         if path.is_file()
     }
     declared: list[types.FileMetadata] = client.declare_files(files)
-    txn_uuid: str = client.begin_transaction(declared)
+    txn_uuid: str = client.begin_transaction(types.TransactionManifest(added=declared))
     client.upload_files(txn_uuid, files)
     return client.commit(txn_uuid)
 
@@ -56,7 +56,7 @@ def commit_file(client: server_client.ServerClient, source_dir: Path, rel_path: 
     # drives a single file through the full write lifecycle as its own commit
     files: dict[str, Path] = {rel_path: source_dir / rel_path}
     declared: list[types.FileMetadata] = client.declare_files(files)
-    txn_uuid: str = client.begin_transaction(declared)
+    txn_uuid: str = client.begin_transaction(types.TransactionManifest(added=declared))
     client.upload_files(txn_uuid, files)
     return client.commit(txn_uuid)
 
@@ -94,7 +94,7 @@ def test_pull_downloads_everything_and_records_state(
     state: dict[str, bearpond_client.FileState] = workspace._tracked_files()
     assert sorted(state) == [PATH_A, PATH_B]
     assert state[PATH_A].sha256 == conftest.sha256_hex(CONTENT_A)
-    assert workspace.tracked_manifest().seq == 1
+    assert workspace._tracked_manifest().seq == 1
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -110,7 +110,7 @@ def test_second_sync_refetches_nothing(
     workspace.pull(client)
 
     downloads: list[str] = []
-    original = client.download_file
+    original: Callable[[str, Path], str] = client.download_file
 
     def counting_download(rel_path: str, dest_path: Path) -> str:
         downloads.append(rel_path)
@@ -132,7 +132,7 @@ def test_pull_prunes_removed_files_and_empty_dirs(
 
     # a second transaction removes PATH_A from the lake, against the exact content the client observed
     removed_meta: types.FileMetadata = conftest.file_meta(PATH_A, CONTENT_A)
-    txn_uuid: str = client.begin_transaction([], removed=[removed_meta])
+    txn_uuid: str = client.begin_transaction(types.TransactionManifest(removed=[removed_meta]))
     client.commit(txn_uuid)
 
     workspace.pull(client)
@@ -145,7 +145,7 @@ def test_pull_prunes_removed_files_and_empty_dirs(
 
     state: dict[str, bearpond_client.FileState] = workspace._tracked_files()
     assert sorted(state) == [PATH_B]
-    assert workspace.tracked_manifest().seq == 2
+    assert workspace._tracked_manifest().seq == 2
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -169,7 +169,7 @@ def test_pull_fails_on_checksum_mismatch(
 def test_get_transaction_status(client: server_client.ServerClient, source_dir: Path) -> None:
     files: dict[str, Path] = {PATH_A: source_dir / PATH_A}
     declared: list[types.FileMetadata] = client.declare_files(files)
-    txn_uuid: str = client.begin_transaction(declared)
+    txn_uuid: str = client.begin_transaction(types.TransactionManifest(added=declared))
     assert client.get_transaction_status(txn_uuid).status == "open"
 
     client.upload_files(txn_uuid, files)
@@ -194,7 +194,7 @@ def test_clone_creates_a_bound_workspace_with_files(
 
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert (target / PATH_B).read_bytes() == CONTENT_B
-    manifest: types.Manifest | None = workspace.tracked_manifest()
+    manifest: types.Manifest | None = workspace._tracked_manifest()
     assert manifest is not None and manifest.seq == 1
     config: dict = json.loads((target / ".bearpond" / "config.json").read_text())
     assert config == {"server": live_server, "repo": conftest.REPO_NAME}
@@ -224,7 +224,7 @@ def test_cli_repo_create_then_clone(live_server: str, tmp_path: Path) -> None:
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient.clone(
         live_server, "newrepo", tmp_path / "newrepo"
     )
-    manifest: types.Manifest | None = workspace.tracked_manifest()
+    manifest: types.Manifest | None = workspace._tracked_manifest()
     assert manifest is not None and manifest.seq == 0  # a fresh repo is an empty lake
 
 
@@ -278,7 +278,7 @@ def test_commit_stores_the_pristine_manifest(client: server_client.ServerClient,
     raw: dict = json.loads((source_dir / bearpond_client.STATE_DIR_NAME / bearpond_client.MANIFEST_NAME).read_text())
     assert raw["seq"] == result.seq == 1
     assert not (source_dir / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).exists()
-    assert workspace.tracked_manifest().seq == 1
+    assert workspace._tracked_manifest().seq == 1
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -293,7 +293,7 @@ def test_pull_resumes_from_pending_after_interruption(
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
 
     # a pull that dies after the first download: the completed file is recorded in the pending overlay
-    original = client.download_file
+    original: Callable[[str, Path], str] = client.download_file
     calls: list[str] = []
 
     def fail_after_first(rel_path: str, dest_path: Path) -> str:
@@ -352,7 +352,7 @@ def test_pull_to_specific_seq_downloads_only_that_version(
 
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert not (target / PATH_B).exists()
-    assert workspace.tracked_manifest().seq == 1
+    assert workspace._tracked_manifest().seq == 1
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -370,7 +370,7 @@ def test_pull_to_specific_seq_prunes_files_from_a_newer_version(
     workspace.pull(client, seq=1)
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert not (target / PATH_B).exists()
-    assert workspace.tracked_manifest().seq == 1
+    assert workspace._tracked_manifest().seq == 1
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -386,7 +386,7 @@ def test_pull_to_specific_seq_refuses_with_pending_pull(
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
 
-    original = client.download_file
+    original: Callable[[str, Path], str] = client.download_file
     calls: list[str] = []
 
     def fail_after_first(rel_path: str, dest_path: Path) -> str:
@@ -424,7 +424,7 @@ def test_pull_switching_view_refuses_with_staged_changes(
 
     # switching the query or seq is rejected while staged changes exist
     with pytest.raises(server_client.BearpondError, match="staged changes"):
-        workspace.pull(client, query=[["month=02"]])
+        workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[["month=02"]]))
 
     with pytest.raises(server_client.BearpondError, match="staged changes"):
         workspace.pull(client, seq=1)
@@ -452,7 +452,7 @@ def test_cli_pull_with_seq(
 
     assert (workdir / PATH_A).read_bytes() == CONTENT_A
     assert not (workdir / PATH_B).exists()
-    assert bearpond_client.BearpondClient(workdir).tracked_manifest().seq == 1
+    assert bearpond_client.BearpondClient(workdir)._tracked_manifest().seq == 1
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -567,7 +567,7 @@ def test_cli_update_flow(
     out = capsys.readouterr().out
     assert "~1 file(s)" in out
 
-    assert bearpond_client.BearpondClient(workdir).tracked_manifest().seq == 2
+    assert bearpond_client.BearpondClient(workdir)._tracked_manifest().seq == 2
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -578,13 +578,13 @@ def test_pull_with_query_downloads_only_matching_files(
 
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    workspace.pull(client, query=[["month=01"]])
+    workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[["month=01"]]))
 
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert not (target / PATH_B).exists()
 
     status: bearpond_client.WorkspaceStatus = workspace.status()
-    assert status.query == [["month=01"]]
+    assert status.query.groups == [["month=01"]]
     assert PATH_A not in status.missing
     assert PATH_B not in status.missing  # outside the query view
     assert PATH_B not in status.untracked  # outside the query view
@@ -598,11 +598,11 @@ def test_pull_with_multiple_queries_ors_groups(
 
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    workspace.pull(client, query=[["month=01"], ["month=02"]])
+    workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[["month=01"], ["month=02"]]))
 
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert (target / PATH_B).read_bytes() == CONTENT_B
-    assert workspace.status().query == [["month=01"], ["month=02"]]
+    assert workspace.status().query.groups == [["month=01"], ["month=02"]]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -613,11 +613,11 @@ def test_pull_switching_query_prunes_files_from_old_view(
 
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    workspace.pull(client, query=[["month=01"]])
+    workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[["month=01"]]))
     assert (target / PATH_A).exists()
     assert not (target / PATH_B).exists()
 
-    workspace.pull(client, query=[["month=02"]])
+    workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[["month=02"]]))
     assert not (target / PATH_A).exists()
     assert (target / PATH_B).read_bytes() == CONTENT_B
 
@@ -630,10 +630,10 @@ def test_pull_full_mirror_after_subset_restores_all_files(
 
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    workspace.pull(client, query=[["month=01"]])
+    workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[["month=01"]]))
     assert not (target / PATH_B).exists()
 
-    workspace.pull(client, query=[])
+    workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[]))
     assert (target / PATH_A).read_bytes() == CONTENT_A
     assert (target / PATH_B).read_bytes() == CONTENT_B
 
@@ -646,7 +646,7 @@ def test_pull_query_leaves_user_files_outside_view_untouched(
 
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    workspace.pull(client, query=[["month=01"]])
+    workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[["month=01"]]))
 
     # a user drops an unrelated file into the workspace — it should survive a query switch
     extra_path: str = "year=2024/month=03/extra.parquet"
@@ -654,7 +654,7 @@ def test_pull_query_leaves_user_files_outside_view_untouched(
     extra_file.parent.mkdir(parents=True)
     extra_file.write_bytes(b"user file")
 
-    workspace.pull(client, query=[["month=02"]])
+    workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[["month=02"]]))
     assert not (target / PATH_A).exists()
     assert (target / PATH_B).read_bytes() == CONTENT_B
     assert extra_file.read_bytes() == b"user file"
@@ -668,10 +668,10 @@ def test_status_shows_current_query(
 
     target: Path = tmp_path / "mirror"
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(target)
-    workspace.pull(client, query=[["month=01"]])
+    workspace.pull(client, query=bearpond_client.SubsetQuery(groups=[["month=01"]]))
 
     status: bearpond_client.WorkspaceStatus = workspace.status()
-    assert status.query == [["month=01"]]
+    assert status.query.groups == [["month=01"]]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -692,4 +692,4 @@ def test_cli_pull_with_query(
 
     assert (workdir / PATH_A).read_bytes() == CONTENT_A
     assert not (workdir / PATH_B).exists()
-    assert bearpond_client.BearpondClient(workdir).status().query == [["month=01"]]
+    assert bearpond_client.BearpondClient(workdir).status().query.groups == [["month=01"]]

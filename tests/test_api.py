@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 import conftest
+from bearpond import types
 from bearpond.server import repository
 
 HIVE_PATH = "year=2024/month=01/part.parquet"
@@ -11,7 +12,7 @@ CONTENT = b"fake parquet bytes"
 OTHER_CONTENT = b"updated parquet bytes"
 
 
-# ======================================================================================================================
+# ----------------------------------------------------------------------------------------------------------------------
 @pytest.fixture
 def api(live_server: str) -> Iterator[httpx.Client]:
     # exercises the real HTTP stack (starlette's httpx.Client+httpx combo is deprecated) against a fresh repo per test
@@ -241,10 +242,10 @@ def test_update_over_http(api: httpx.Client) -> None:
 
     updated_meta: dict = {
         "path": HIVE_PATH,
-        "old_size": len(CONTENT),
         "old_sha256": conftest.sha256_hex(CONTENT),
-        "new_size": len(OTHER_CONTENT),
+        "old_size": len(CONTENT),
         "new_sha256": conftest.sha256_hex(OTHER_CONTENT),
+        "new_size": len(OTHER_CONTENT),
     }
     begin: httpx.Response = api.post(
         f"/repos/{conftest.REPO_NAME}/transactions", json={"added": [], "removed": [], "updated": [updated_meta]}

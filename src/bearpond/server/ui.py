@@ -26,8 +26,8 @@ def ui_health() -> JSONResponse:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def mount_ui(app: FastAPI) -> None:
-    # Serve the built React app. API routes are registered before this is called, so they take precedence.
-    # Vite places hashed JS/CSS under /assets and keeps index.html at the root, so we mount assets explicitly
+    # serve the built React app — API routes are registered before this is called, so they take precedence.
+    # vite places hashed JS/CSS under /assets and keeps index.html at the root, so we mount assets explicitly
     # and return index.html for the root path and for all client-side routes handled by React Router.
     if not (STATIC_DIR / "index.html").exists():
         @app.get("/")
@@ -39,15 +39,14 @@ def mount_ui(app: FastAPI) -> None:
                 },
                 status_code=404,
             )
-        return
+    else:
+        if ASSETS_DIR.exists():
+            app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="static-assets")
 
-    if ASSETS_DIR.exists():
-        app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="static-assets")
+        @app.get("/")
+        def serve_index(request: Request) -> FileResponse:  # noqa: ARG001
+            return FileResponse(STATIC_DIR / "index.html")
 
-    @app.get("/")
-    def serve_index(request: Request) -> FileResponse:  # noqa: ARG001
-        return FileResponse(STATIC_DIR / "index.html")
-
-    @app.get("/{catchall:path}")
-    def serve_spa(catchall: str, request: Request) -> FileResponse:  # noqa: ARG001
-        return FileResponse(STATIC_DIR / "index.html")
+        @app.get("/{catchall:path}")
+        def serve_spa(catchall: str, request: Request) -> FileResponse:  # noqa: ARG001
+            return FileResponse(STATIC_DIR / "index.html")

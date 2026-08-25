@@ -5,7 +5,8 @@ from . import config
 from . import metadata_store
 from . import object_store
 from . import repository
-from .sqlite_server_metadata_store import SqliteServerMetadataStore
+from . import server_metadata_store
+from . import sqlite_server_metadata_store
 
 
 # ======================================================================================================================
@@ -19,7 +20,7 @@ class Server:
     # ------------------------------------------------------------------------------------------------------------------
     def __init__(self, server_config: config.ServerConfig) -> None:
         self.config: config.ServerConfig = server_config
-        self.metadata_store: metadata_store.ServerMetadataStore = SqliteServerMetadataStore(server_config.db_path)
+        self.metadata_store: server_metadata_store.ServerMetadataStore = sqlite_server_metadata_store.SqliteServerMetadataStore(server_config.db_path)
         self.object_store: object_store.ObjectStore = object_store.ObjectStore(server_config.object_store_root)
         self._repos: dict[str, repository.Repository] = {}
 
@@ -74,12 +75,13 @@ def configure(server_config: config.ServerConfig) -> Server:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def get_server() -> Server:
-    if _server_instance is None:
+    result: Server | None = _server_instance
+    if result is None:
         config_dir: Path | None = config.config_dir_from_env()
-        if config_dir is not None:
-            return configure(config.load_server_config(config_dir))
-        raise RuntimeError("bearpond server is not configured — set BEARPOND_CONFIG_DIR before startup")
-    return _server_instance
+        if config_dir is None:
+            raise RuntimeError("bearpond server is not configured — set BEARPOND_CONFIG_DIR before startup")
+        result = configure(config.load_server_config(config_dir))
+    return result
 
 
 # ----------------------------------------------------------------------------------------------------------------------

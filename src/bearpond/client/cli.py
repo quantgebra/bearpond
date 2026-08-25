@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from .. import types
 from . import bearpond_client
@@ -10,30 +11,36 @@ from . import server_client
 TOKEN_ENV_VAR = "BEARPOND_TOKEN"
 
 
+# ======================================================================================================================
+class RepoUrl(NamedTuple):
+    server: str
+    repo: str
+
+
 # ----------------------------------------------------------------------------------------------------------------------
-def split_repo_url(url: str) -> tuple[str, str]:
+def split_repo_url(url: str) -> RepoUrl:
     # "<server>/<repo>" — a trailing /repos/ prefix on the server part is accepted and normalized away
     server, sep, repo = url.rstrip("/").rpartition("/")
     if not sep or not repo or not server:
         raise server_client.BearpondError(f"URL must look like <server>/<repo>: {url}")
     if server.endswith("/repos"):
         server = server[: -len("/repos")]
-    return server, repo
+    return RepoUrl(server=server, repo=repo)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_repo_create(args: argparse.Namespace) -> None:
-    server, repo = split_repo_url(args.url)
-    with server_client.ServerClient(server, repo, token=args.token) as client:
-        client.create_repository(repo)
+    repo_url: RepoUrl = split_repo_url(args.url)
+    with server_client.ServerClient(repo_url.server, repo_url.repo, token=args.token) as client:
+        client.create_repository(repo_url.repo)
     print(f"Created repository: {args.url}")
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_clone(args: argparse.Namespace) -> None:
-    server, repo = split_repo_url(args.url)
-    target: Path = args.dir if args.dir is not None else Path(repo)
-    bearpond_client.BearpondClient.clone(server, repo, target, token=args.token)
+    repo_url: RepoUrl = split_repo_url(args.url)
+    target: Path = args.dir if args.dir is not None else Path(repo_url.repo)
+    bearpond_client.BearpondClient.clone(repo_url.server, repo_url.repo, target, token=args.token)
     print(f"Cloned {args.url} into {target}")
 
 
@@ -60,9 +67,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
     status: bearpond_client.WorkspaceStatus = client.status()
 
-    query_label: str = "full mirror" if not status.query else "query [" + " | ".join(
-        " ".join(group) for group in status.query
-    ) + "]"
+    query_label: str = status.query.label()
     print(f"Workspace at manifest-{status.workspace_seq:08d} — {query_label}")
     for path in status.pending:
         print(f"  pending pull:  {path}")
@@ -95,7 +100,9 @@ def cmd_commit(args: argparse.Namespace) -> None:
 # ----------------------------------------------------------------------------------------------------------------------
 def cmd_pull(args: argparse.Namespace) -> None:
     client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
-    query: list[list[str]] | None = args.query if args.query is not None else None
+    query: bearpond_client.SubsetQuery | None = None
+    if args.query is not None:
+        query = bearpond_client.SubsetQuery(groups=args.query)
     with client.connect(token=args.token) as server:
         client.pull(server, dry_run=args.dry_run, seq=args.seq, query=query)
 

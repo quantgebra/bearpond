@@ -28,7 +28,7 @@ def load_server_config(config_dir: Path) -> ServerConfig:
     if not config_path.exists():
         raise FileNotFoundError(f"no server.yaml found in config dir: {config_dir}")
 
-    raw: dict = yaml.safe_load(config_path.read_text()) or {}
+    raw: dict = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
     # db_path defaults to bearpond.sqlite next to the config file; relative paths resolve against the config dir,
     # not the process's cwd — so the same config works regardless of where the server happens to be launched from

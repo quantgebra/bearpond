@@ -110,7 +110,7 @@ def write_workspace_config(workdir: Path, server: str, repo: str = REPO_NAME) ->
     (config_dir / "config.json").write_text(json.dumps({"server": server, "repo": repo}))
 
 
-# ======================================================================================================================
+# ----------------------------------------------------------------------------------------------------------------------
 @pytest.fixture
 def repo_root(tmp_path: Path) -> Path:
     # the server's repos root — one subdirectory per repository
@@ -119,7 +119,7 @@ def repo_root(tmp_path: Path) -> Path:
     return root
 
 
-# ======================================================================================================================
+# ----------------------------------------------------------------------------------------------------------------------
 @pytest.fixture
 def repo(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[repository.Repository]:
     # points the process-wide registry at this test's fresh repos root, with one repository created inside it —
@@ -136,7 +136,7 @@ def repo(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[repositor
     server_module.close()
 
 
-# ======================================================================================================================
+# ----------------------------------------------------------------------------------------------------------------------
 @pytest.fixture
 def live_server(repo: repository.Repository) -> Iterator[str]:
     with running_server() as url:

@@ -76,6 +76,8 @@ export BEARPOND_CONFIG_DIR=/path/to/config
 uvicorn bearpond.server.api.app:app --port 8000
 ```
 
+On Windows, set the variable with `set BEARPOND_CONFIG_DIR=C:\path\to\config` (cmd.exe) or `$env:BEARPOND_CONFIG_DIR = "C:\path\to\config"` (PowerShell). bearpond runs on Linux, macOS, and Windows; on Windows, directory-level fsync durability is unavailable and skipped (file-level fsyncs and SQLite transactions are unaffected).
+
 **Create a repository and clone it.** Workspaces are always bound to a remote repo — `clone` is the only way one comes into being, and afterwards no command needs a `--server` flag (the binding lives in `.bearpond/config.json`):
 
 ```bash

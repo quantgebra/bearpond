@@ -29,6 +29,8 @@ def config_dir_from_env() -> Path | None:
     ...
 ```
 
+Pytest fixtures are functions and take the function hat like any other function. Two exemptions where a hat would be noise rather than structure: function definitions nested inside another function body, and one-line stub declarations (e.g. `Protocol` or abstract method bodies that are just `...`).
+
 ## 2. Single return per function/method
 
 Every function/method has exactly one `return` statement, placed at the end. Don't early-return in the middle of a function body — restructure instead (accumulate into a result variable, use if/elif/else branches that all fall through to one final return, etc.).
@@ -163,6 +165,8 @@ class BearpondClient:
     def close(self) -> None:
         ...
 ```
+
+Data-model classes — pydantic models, `NamedTuple`s, dataclasses, exception classes — whose bodies are just field declarations (and possibly methods on a `NamedTuple`) may omit the blank line; the layout rules matter for behavior classes, where the class body has sections to organize.
 
 ## 10. A helper goes next to its (near-)exclusive caller
 
@@ -461,3 +465,25 @@ self.repo.metadata_store.save_transaction_uploaded(self)
 ```
 
 **Exception:** operations that are purely about identity — e.g. `delete_transaction(txn_uuid)` or `get_transaction(txn_uuid)` — legitimately take only the identifier because the object does not yet exist (or no longer exists) on the called side. Once the callee needs the object's state, pass the object.
+
+## 23. A nested collection with a fixed meaning gets a named type
+
+A flat `list[X]` or `dict[K, V]` is a fine general-purpose container. But once the *structure itself* carries domain meaning — a subset-pull query represented as a list of AND-groups that OR together, for example — the bare nested type (`list[list[str]]`, `dict[str, list[str]]`) is a smell: every call site has to re-derive what each level of nesting means, nothing stops the levels from being transposed or a level being silently flattened, and the type signature alone can't tell a reader what the value *is*.
+
+Wrap the structure in a named type whose name states the concept — a `NamedTuple`, or a `BaseModel` per rule 6 — and put the operations over the structure (matching, formatting, legacy-format upgrades) on the type as methods, so the meaning lives in exactly one place:
+
+```python
+# Not this: the OR-of-AND-groups meaning re-derived at every call site
+def _load_query(self) -> list[list[str]]: ...
+def _path_matches_query(rel_path: str, query: list[list[str]]) -> bool: ...
+
+# This: the concept has a name and owns its operations
+class SubsetQuery(NamedTuple):
+    groups: list[list[str]]  # each group is ANDed; groups are OR'd — empty means "match everything"
+
+    def matches(self, rel_path: str) -> bool: ...
+
+def _load_query(self) -> SubsetQuery: ...
+```
+
+This rule is about the type that crosses function/method boundaries, not about storage formats: the on-disk JSON for a `SubsetQuery` may stay a plain nested list if that's the convenient serialization, as long as the value is wrapped in the named type at the load/save boundary and travels as that type everywhere else. If an inner level itself earns a name (e.g. a `QueryGroup` with its own behavior), wrap that too.

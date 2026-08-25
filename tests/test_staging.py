@@ -32,13 +32,12 @@ def write_workspace_manifest(workdir: Path, seq: int, files: dict[str, list]) ->
     manifest: dict = {
         "seq": seq,
         "created_at": None,
-        "files": [{"path": p, "size": v[0], "sha256": v[1]} for p, v in files.items()],
+        "files": [{"path": p, "sha256": v[0], "size": v[1]} for p, v in files.items()],
     }
     write_workspace_manifest_file(workdir, manifest)
-    write_workspace_manifest_file(workdir, manifest)
 
 
-# ======================================================================================================================
+# ----------------------------------------------------------------------------------------------------------------------
 @pytest.fixture
 def workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # a working directory holding hive-layout parquet files, made the cwd — add/commit operate relative to it
@@ -130,7 +129,7 @@ def test_cmd_commit_with_nothing_staged(workdir: Path, live_server: str) -> None
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_rm_stages_removal_with_recorded_metadata(workdir: Path) -> None:
-    workspace_files: dict = {HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]}
+    workspace_files: dict = {HIVE_PATH: [conftest.sha256_hex(CONTENT), len(CONTENT)]}
     write_workspace_manifest(workdir, 3, workspace_files)
 
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
@@ -161,7 +160,7 @@ def test_rm_unstages_a_pending_add(workdir: Path) -> None:
 def test_rm_of_tracked_file_staged_for_readd_cancels_the_add(workdir: Path) -> None:
     # a tracked file staged for re-add: rm must cancel the pending add AND stage the removal — never both,
     # since the server rejects a manifest with the same path in added and removed
-    write_workspace_manifest(workdir, 3, {HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]})
+    write_workspace_manifest(workdir, 3, {HIVE_PATH: [conftest.sha256_hex(CONTENT), len(CONTENT)]})
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
     workspace.add([Path(HIVE_PATH)])
 
@@ -188,7 +187,7 @@ def test_rm_commit_removes_from_lake_and_workspace(workdir: Path, live_server: s
     assert manifest is not None
     assert [f.path for f in manifest.files] == [OTHER_PATH]
     assert sorted(workspace._tracked_files()) == [OTHER_PATH]
-    assert workspace.tracked_manifest().seq == 2
+    assert workspace._tracked_manifest().seq == 2
     assert not (workdir / HIVE_PATH).exists()
     assert not (workdir / "year=2024/month=01").exists()
     assert (workdir / OTHER_PATH).read_bytes() == OTHER_CONTENT
@@ -198,7 +197,7 @@ def test_rm_commit_removes_from_lake_and_workspace(workdir: Path, live_server: s
 def test_mutating_operations_refuse_a_workspace_with_interrupted_sync(workdir: Path) -> None:
     # a dirty workspace (interrupted pull pending) only supports pull and status — add/rm/commit must refuse
     (workdir / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).parent.mkdir(exist_ok=True)
-    (workdir / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).write_text(json.dumps({HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)]}))
+    (workdir / bearpond_client.STATE_DIR_NAME / bearpond_client.PENDING_NAME).write_text(json.dumps({HIVE_PATH: [conftest.sha256_hex(CONTENT), len(CONTENT)]}))
 
     workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient(workdir)
     with pytest.raises(server_client.BearpondError, match="interrupted pull"):
@@ -250,9 +249,9 @@ def test_prune_empty_dirs_is_a_noop_outside_root(tmp_path: Path) -> None:
 def test_status_reports_staged_untracked_modified_and_missing(workdir: Path) -> None:
     # workspace state: PATH_A clean, OTHER_PATH tampered (hash differs), one path gone from disk entirely
     workspace_files: dict = {
-        HIVE_PATH: [len(CONTENT), conftest.sha256_hex(CONTENT)],
-        OTHER_PATH: [len(OTHER_CONTENT), "0" * 64],
-        "year=2024/month=03/gone.parquet": [1, "0" * 64],
+        HIVE_PATH: [conftest.sha256_hex(CONTENT), len(CONTENT)],
+        OTHER_PATH: ["0" * 64, len(OTHER_CONTENT)],
+        "year=2024/month=03/gone.parquet": ["0" * 64, 1],
     }
     write_workspace_manifest(workdir, 7, workspace_files)
 

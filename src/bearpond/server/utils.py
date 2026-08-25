@@ -6,7 +6,8 @@ CHUNK_SIZE = 1024 * 1024
 
 # note on durability: fsync flushes the kernel's page cache to the storage device. On macOS it still doesn't flush
 # the device's own volatile write cache (that needs fcntl(F_FULLFSYNC)) — real power-loss guarantees assume a
-# Linux deployment, where fsync means what it says.
+# Linux deployment, where fsync means what it says. On Windows, directories can't be opened for fsync at all, so
+# directory-entry durability is skipped there (see fsync_dir).
 
 
 # ======================================================================================================================
@@ -37,12 +38,15 @@ def sha256_file(path: Path) -> str:
 # ----------------------------------------------------------------------------------------------------------------------
 def fsync_dir(path: Path) -> None:
     # makes directory-entry changes (renames, unlinks) inside path durable — fsyncing a file doesn't fsync the
-    # directory that names it, so a rename is only power-loss-safe once its parent directory has been fsynced
-    fd: int = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    # directory that names it, so a rename is only power-loss-safe once its parent directory has been fsynced.
+    # Windows can't open a directory with os.open, so this is a no-op there — file-level fsyncs still happen,
+    # and the metadata store's SQLite transactions remain the system of record either way.
+    if os.name != "nt":
+        fd: int = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 # ----------------------------------------------------------------------------------------------------------------------

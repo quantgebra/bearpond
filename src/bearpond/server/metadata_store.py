@@ -1,6 +1,14 @@
 from .. import types
+from . import server_metadata_store
 from . import transaction
-from .server_metadata_store import DirectoryPage, MetadataConflictError, MetadataStoreError, ServerMetadataStore
+
+# the metadata-store concept's single import surface: the interface and its error types live in
+# server_metadata_store, the repo-scoped view below adds the per-repo binding — re-exported so consumers
+# need only this module
+DirectoryPage = server_metadata_store.DirectoryPage
+MetadataConflictError = server_metadata_store.MetadataConflictError
+MetadataStoreError = server_metadata_store.MetadataStoreError
+ServerMetadataStore = server_metadata_store.ServerMetadataStore
 
 __all__ = [
     "DirectoryPage",
@@ -18,16 +26,16 @@ __all__ = [
 class MetadataStore:
 
     # ------------------------------------------------------------------------------------------------------------------
-    def __init__(self, repo: str, store: ServerMetadataStore) -> None:
+    def __init__(self, repo: str, store: server_metadata_store.ServerMetadataStore) -> None:
         self._repo: str = repo
-        self._store: ServerMetadataStore = store
+        self._store: server_metadata_store.ServerMetadataStore = store
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_file_metadata(self, path: str) -> types.FileMetadata | None:
         return self._store.get_file_metadata(self._repo, path)
 
     # ------------------------------------------------------------------------------------------------------------------
-    def list_directory(self, prefix: str, limit: int, cursor: str | None = None) -> DirectoryPage:
+    def list_directory(self, prefix: str, limit: int, cursor: str | None = None) -> server_metadata_store.DirectoryPage:
         return self._store.list_directory(self._repo, prefix, limit, cursor)
 
     # ------------------------------------------------------------------------------------------------------------------
