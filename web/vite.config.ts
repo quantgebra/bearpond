@@ -13,7 +13,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       // During development, API calls from the React app are forwarded to the FastAPI backend.
-      '/api': {
+      '/repos': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
