@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from typing import Optional
 
 from . import config
 from . import metadata_store
@@ -19,35 +20,65 @@ class Server:
 
     # ------------------------------------------------------------------------------------------------------------------
     def __init__(self, server_config: config.ServerConfig) -> None:
+        # we don't really ever use the config, but save it anyhow
         self.config: config.ServerConfig = server_config
-        self.metadata_store: server_metadata_store.ServerMetadataStore = sqlite_server_metadata_store.SqliteServerMetadataStore(server_config.db_path)
+        
+        # create the MetadataStore
+        self.metadata_store: server_metadata_store.ServerMetadataStore = (
+            sqlite_server_metadata_store.SqliteServerMetadataStore(server_config.db_path))
+        
+        # create the ObjectStore
         self.object_store: object_store.ObjectStore = object_store.ObjectStore(server_config.object_store_root)
-        self._repos: dict[str, repository.Repository] = {}
+        
+        # a name_2_repo map
+        self._name_2_repo: dict[str, repository.Repository] = {}
 
     # ------------------------------------------------------------------------------------------------------------------
-    def _repo_view(self, name: str) -> metadata_store.MetadataStore:
+    def _repo_metadata_store(self, name: str) -> metadata_store.MetadataStore:
         return metadata_store.MetadataStore(name, self.metadata_store)
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_repository(self, name: str) -> repository.Repository:
-        if name not in self._repos:
-            if not self._REPO_NAME.match(name):
-                raise repository.RepositoryNotFoundError(f"invalid repository name: {name}")
-            # a repository exists iff it is registered in the metadata store — there is no on-disk repo directory
+        # ensure the name matches our rules
+        if not self._REPO_NAME.match(name):
+            raise repository.RepositoryNotFoundError(f"invalid repository name: {name}")
+
+        # first try to get it from the cache
+        result: Optional[repository.Repository] = self._name_2_repo.get(name)
+
+        if result is None:
+            # we don't have the repo in the cache, let's try to create it
+            
+            # if we don't have a record of it in the MetadataStore, then raise an Error
             if name not in self.metadata_store.list_repos():
                 raise repository.RepositoryNotFoundError(f"unknown repository: {name}")
-            self._repos[name] = repository.Repository(name, self._repo_view(name), self.object_store)
-        return self._repos[name]
+            
+            # create the repo and add it to the cache
+            self._name_2_repo[name] = repository.Repository(name, self._repo_metadata_store(name), self.object_store)
+            
+            # get the result from the cache
+            result = self._name_2_repo[name]
+
+        # by this point every path above has populated result — tell the type checker so
+        assert result is not None
+        return result
 
     # ------------------------------------------------------------------------------------------------------------------
     def create_repository(self, name: str) -> repository.Repository:
+        # ensure the name matches our rules
         if not self._REPO_NAME.match(name):
             raise repository.InvalidRepositoryNameError(f"invalid repository name: {name}")
+        
+        # error on name collisions
         if name in self.metadata_store.list_repos():
             raise repository.RepositoryExistsError(f"repository already exists: {name}")
+        
+        # create the repo, register it with the metadata_store
         self.metadata_store.register_repo(name)
-        self._repos[name] = repository.Repository(name, self._repo_view(name), self.object_store)
-        return self._repos[name]
+        self._name_2_repo[name] = repository.Repository(name, self._repo_metadata_store(name), self.object_store)
+        
+        # return
+        return self._name_2_repo[name]
 
     # ------------------------------------------------------------------------------------------------------------------
     def list_repositories(self) -> list[str]:
@@ -55,7 +86,7 @@ class Server:
 
     # ------------------------------------------------------------------------------------------------------------------
     def close(self) -> None:
-        self._repos.clear()
+        self._name_2_repo.clear()
         self.metadata_store.close()
 
 
@@ -70,6 +101,7 @@ def configure(server_config: config.ServerConfig) -> Server:
     global _server_instance
     close()
     _server_instance = Server(server_config)
+    assert _server_instance is not None
     return _server_instance
 
 
@@ -81,6 +113,8 @@ def get_server() -> Server:
         if config_dir is None:
             raise RuntimeError("bearpond server is not configured — set BEARPOND_CONFIG_DIR before startup")
         result = configure(config.load_server_config(config_dir))
+        
+    assert result is not None
     return result
 
 
