@@ -2,6 +2,8 @@ import hashlib
 import os
 from pathlib import Path
 
+from .. import types
+
 CHUNK_SIZE = 1024 * 1024
 
 # note on durability: fsync flushes the kernel's page cache to the storage device. On macOS it still doesn't flush
@@ -26,13 +28,13 @@ def safe_join(base: Path, rel_path: str) -> Path:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def sha256_file(path: Path) -> str:
+def sha256_file(path: Path) -> types.Sha256:
     # stream the file in chunks rather than reading it whole — files in the lake can be multiple GB
     digest: hashlib._Hash = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    return types.Sha256(digest.hexdigest())
 
 
 # ----------------------------------------------------------------------------------------------------------------------

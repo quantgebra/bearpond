@@ -13,7 +13,7 @@ import uvicorn
 
 from bearpond import types
 from bearpond.server import config
-from bearpond.server import metadata_store
+from bearpond.server import repo_metadata_store
 from bearpond.server import repository
 from bearpond.server import server as server_module
 from bearpond.server import transaction
@@ -21,8 +21,8 @@ from bearpond.server.api import app as app_module
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def sha256_hex(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
+def sha256_hex(content: bytes) -> types.Sha256:
+    return types.Sha256(hashlib.sha256(content).hexdigest())
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -58,7 +58,7 @@ def object_path(repo: repository.Repository, content: bytes) -> Path:
 # ----------------------------------------------------------------------------------------------------------------------
 def current_manifest(repo: repository.Repository) -> types.Manifest | None:
     # the manifest at the lake's current seq — None on a never-committed lake
-    store: metadata_store.MetadataStore = repo.metadata_store
+    store: repo_metadata_store.RepoMetadataStore = repo.metadata_store
     return store.get_manifest(store.get_current_seq())
 
 
@@ -68,7 +68,7 @@ async def one_chunk_stream(data: bytes) -> AsyncIterator[bytes]:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def upload_bytes(repo: repository.Repository, txn_uuid: str, rel_path: str, data: bytes) -> types.FileMetadata:
+def upload_bytes(repo: repository.Repository, txn_uuid: types.TxnUuid, rel_path: str, data: bytes) -> types.FileMetadata:
     # Repository.upload_file is async (it streams the request body); tests drive it synchronously
     return asyncio.run(repo.upload_file(txn_uuid, rel_path, one_chunk_stream(data)))
 

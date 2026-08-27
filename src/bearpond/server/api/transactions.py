@@ -29,7 +29,7 @@ def begin_transaction(
 @router.put("/{txn_uuid}/files/{rel_path:path}")
 async def upload_file(
     repo_name: str,
-    txn_uuid: str,
+    txn_uuid: types.TxnUuid,
     rel_path: str,
     request: Request,
     server: server_module.Server = Depends(dependencies.get_server),
@@ -42,7 +42,7 @@ async def upload_file(
 @router.get("/{txn_uuid}")
 def get_transaction_status(
     repo_name: str,
-    txn_uuid: str,
+    txn_uuid: types.TxnUuid,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> types.TransactionStatus:
     repo: repository.Repository = server.get_repository(repo_name)
@@ -68,7 +68,7 @@ def get_transaction_status(
 @router.post("/{txn_uuid}/commit")
 def commit_transaction(
     repo_name: str,
-    txn_uuid: str,
+    txn_uuid: types.TxnUuid,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> types.CommitResponse:
     repo: repository.Repository = server.get_repository(repo_name)
@@ -81,7 +81,7 @@ def commit_transaction(
 @router.delete("/{txn_uuid}", status_code=204)
 def abort_transaction(
     repo_name: str,
-    txn_uuid: str,
+    txn_uuid: types.TxnUuid,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> None:
     server.get_repository(repo_name).abort(txn_uuid)

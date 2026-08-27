@@ -21,7 +21,7 @@ def api(live_server: str) -> Iterator[httpx.Client]:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def begin_add(api: httpx.Client, rel_path: str, content: bytes) -> str:
+def begin_add(api: httpx.Client, rel_path: str, content: bytes) -> types.TxnUuid:
     meta: dict = conftest.file_meta(rel_path, content).model_dump()
     response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions", json={"added": [meta], "removed": []})
     assert response.status_code == 200, response.text
@@ -30,7 +30,7 @@ def begin_add(api: httpx.Client, rel_path: str, content: bytes) -> str:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def commit_via_api(api: httpx.Client, rel_path: str, content: bytes) -> dict:
-    txn_uuid: str = begin_add(api, rel_path, content)
+    txn_uuid: types.TxnUuid = begin_add(api, rel_path, content)
     upload_response: httpx.Response = api.put(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/files/{rel_path}", content=content)
     assert upload_response.status_code == 200, upload_response.text
     commit_response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit")
@@ -56,7 +56,7 @@ def test_commit_unknown_transaction_is_404(api: httpx.Client) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_upload_with_wrong_content_is_400(api: httpx.Client) -> None:
-    txn_uuid: str = begin_add(api, HIVE_PATH, CONTENT)
+    txn_uuid: types.TxnUuid = begin_add(api, HIVE_PATH, CONTENT)
     response: httpx.Response = api.put(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/files/{HIVE_PATH}", content=b"not the declared content")
     assert response.status_code == 400
 
@@ -98,7 +98,7 @@ def test_auth_rejects_missing_and_wrong_tokens(api: httpx.Client, monkeypatch: p
 def test_commit_retry_returns_the_same_result(api: httpx.Client) -> None:
     # a client that lost the first commit response (crash, timeout) can safely retry — the answer comes from the
     # commit record, identical to the original
-    txn_uuid: str = begin_add(api, HIVE_PATH, CONTENT)
+    txn_uuid: types.TxnUuid = begin_add(api, HIVE_PATH, CONTENT)
     api.put(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/files/{HIVE_PATH}", content=CONTENT)
 
     first: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit")
@@ -117,7 +117,7 @@ def test_commit_records_the_user_and_reason(api: httpx.Client, repo: repository.
         json={"added": [meta], "user": "nightly-etl", "reason": "why we did it"},
     )
     assert begin_response.status_code == 200, begin_response.text
-    txn_uuid: str = begin_response.json()["txn_uuid"]
+    txn_uuid: types.TxnUuid = begin_response.json()["txn_uuid"]
     api.put(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/files/{HIVE_PATH}", content=CONTENT)
 
     response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit")
@@ -131,7 +131,7 @@ def test_commit_records_the_user_and_reason(api: httpx.Client, repo: repository.
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_transaction_status_reports_open_committed_and_unknown(api: httpx.Client) -> None:
-    txn_uuid: str = begin_add(api, HIVE_PATH, CONTENT)
+    txn_uuid: types.TxnUuid = begin_add(api, HIVE_PATH, CONTENT)
 
     open_response: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}")
     assert open_response.status_code == 200
@@ -251,7 +251,7 @@ def test_update_over_http(api: httpx.Client) -> None:
         f"/repos/{conftest.REPO_NAME}/transactions", json={"added": [], "removed": [], "updated": [updated_meta]}
     )
     assert begin.status_code == 200, begin.text
-    txn_uuid: str = begin.json()["txn_uuid"]
+    txn_uuid: types.TxnUuid = begin.json()["txn_uuid"]
     assert begin.json()["updated_files"] == [HIVE_PATH]
 
     upload: httpx.Response = api.put(

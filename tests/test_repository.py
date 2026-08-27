@@ -5,7 +5,6 @@ import pytest
 import conftest
 from bearpond import types
 from bearpond.server import config
-from bearpond.server import metadata_store
 from bearpond.server import repository
 from bearpond.server import server as server_module
 from bearpond.server import transaction
@@ -114,7 +113,7 @@ def test_begin_creates_transaction_state(repo: repository.Repository) -> None:
 # ----------------------------------------------------------------------------------------------------------------------
 def test_get_transaction_unknown_id_raises(repo: repository.Repository) -> None:
     with pytest.raises(transaction.TransactionNotFoundError):
-        repo.get_transaction("no-such-transaction")
+        repo.get_transaction(types.TxnUuid("no-such-transaction"))
 
 
 # ----------------------------------------------------------------------------------------------------------------------

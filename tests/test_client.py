@@ -46,7 +46,7 @@ def commit_source_dir(client: server_client.ServerClient, source_dir: Path) -> t
         if path.is_file()
     }
     declared: list[types.FileMetadata] = client.declare_files(files)
-    txn_uuid: str = client.begin_transaction(types.TransactionManifest(added=declared))
+    txn_uuid: types.TxnUuid = client.begin_transaction(types.TransactionManifest(added=declared))
     client.upload_files(txn_uuid, files)
     return client.commit(txn_uuid)
 
@@ -56,7 +56,7 @@ def commit_file(client: server_client.ServerClient, source_dir: Path, rel_path: 
     # drives a single file through the full write lifecycle as its own commit
     files: dict[str, Path] = {rel_path: source_dir / rel_path}
     declared: list[types.FileMetadata] = client.declare_files(files)
-    txn_uuid: str = client.begin_transaction(types.TransactionManifest(added=declared))
+    txn_uuid: types.TxnUuid = client.begin_transaction(types.TransactionManifest(added=declared))
     client.upload_files(txn_uuid, files)
     return client.commit(txn_uuid)
 
@@ -132,7 +132,7 @@ def test_pull_prunes_removed_files_and_empty_dirs(
 
     # a second transaction removes PATH_A from the lake, against the exact content the client observed
     removed_meta: types.FileMetadata = conftest.file_meta(PATH_A, CONTENT_A)
-    txn_uuid: str = client.begin_transaction(types.TransactionManifest(removed=[removed_meta]))
+    txn_uuid: types.TxnUuid = client.begin_transaction(types.TransactionManifest(removed=[removed_meta]))
     client.commit(txn_uuid)
 
     workspace.pull(client)
@@ -169,7 +169,7 @@ def test_pull_fails_on_checksum_mismatch(
 def test_get_transaction_status(client: server_client.ServerClient, source_dir: Path) -> None:
     files: dict[str, Path] = {PATH_A: source_dir / PATH_A}
     declared: list[types.FileMetadata] = client.declare_files(files)
-    txn_uuid: str = client.begin_transaction(types.TransactionManifest(added=declared))
+    txn_uuid: types.TxnUuid = client.begin_transaction(types.TransactionManifest(added=declared))
     assert client.get_transaction_status(txn_uuid).status == "open"
 
     client.upload_files(txn_uuid, files)

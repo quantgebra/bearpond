@@ -20,7 +20,7 @@ class BearpondError(Exception):
 
 # ======================================================================================================================
 class HashAndSize(NamedTuple):
-    sha256: str
+    sha256: types.Sha256
     size: int
 
 
@@ -33,7 +33,7 @@ def hash_and_size(local_path: Path) -> HashAndSize:
         for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
             digest.update(chunk)
             size += len(chunk)
-    return HashAndSize(sha256=digest.hexdigest(), size=size)
+    return HashAndSize(sha256=types.Sha256(digest.hexdigest()), size=size)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -136,7 +136,7 @@ class ServerClient:
         return manifest
 
     # ------------------------------------------------------------------------------------------------------------------
-    def download_file(self, rel_path: str, dest_path: Path) -> str:
+    def download_file(self, rel_path: str, dest_path: Path) -> types.Sha256:
         # streams to a temp file while hashing chunk by chunk, then renames into place — never buffers the whole
         # file in memory and never leaves a partial file at dest_path if the transfer is interrupted
         dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +148,7 @@ class ServerClient:
                 for chunk in response.iter_bytes(chunk_size=CHUNK_SIZE):
                     digest.update(chunk)
                     f.write(chunk)
-        checksum: str = digest.hexdigest()
+        checksum: types.Sha256 = types.Sha256(digest.hexdigest())
         os.replace(tmp_path, dest_path)
         return checksum
 
@@ -168,7 +168,7 @@ class ServerClient:
     # --- transaction lifecycle --------------------------------------------------------------------------------------
 
     # ------------------------------------------------------------------------------------------------------------------
-    def begin_transaction(self, manifest: types.TransactionManifest) -> str:
+    def begin_transaction(self, manifest: types.TransactionManifest) -> types.TxnUuid:
         # user and reason ride on the manifest — they're the transaction's intent, declared at begin time
         response: httpx.Response = self._client.post(f"{self._base}/transactions", json=manifest.model_dump(), headers=self._headers())
         self._raise_for_status(response)
@@ -178,7 +178,7 @@ class ServerClient:
         return result.txn_uuid
 
     # ------------------------------------------------------------------------------------------------------------------
-    def upload_file(self, txn_uuid: str, rel_path: str, local_path: Path) -> types.FileMetadata:
+    def upload_file(self, txn_uuid: types.TxnUuid, rel_path: str, local_path: Path) -> types.FileMetadata:
         response: httpx.Response = self._client.put(
             f"{self._base}/transactions/{txn_uuid}/files/{rel_path}", content=iter_file_chunks(local_path), headers=self._headers()
         )
@@ -187,7 +187,7 @@ class ServerClient:
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
-    def upload_files(self, txn_uuid: str, files: dict[str, Path]) -> list[types.FileMetadata]:
+    def upload_files(self, txn_uuid: types.TxnUuid, files: dict[str, Path]) -> list[types.FileMetadata]:
         # uploads into an already-open transaction; doesn't begin, commit, or abort it — that's the caller's own
         # call to make: begin_transaction() -> upload_files() -> commit() or abort()
         results: list[types.FileMetadata] = []
@@ -196,7 +196,7 @@ class ServerClient:
         return results
 
     # ------------------------------------------------------------------------------------------------------------------
-    def commit(self, txn_uuid: str) -> types.CommitResponse:
+    def commit(self, txn_uuid: types.TxnUuid) -> types.CommitResponse:
         # no body — the reason was declared at begin time; the commit call only finalizes the transaction
         response: httpx.Response = self._client.post(
             f"{self._base}/transactions/{txn_uuid}/commit", headers=self._headers()
@@ -206,12 +206,12 @@ class ServerClient:
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
-    def abort(self, txn_uuid: str) -> None:
+    def abort(self, txn_uuid: types.TxnUuid) -> None:
         response: httpx.Response = self._client.delete(f"{self._base}/transactions/{txn_uuid}", headers=self._headers())
         self._raise_for_status(response)
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_transaction_status(self, txn_uuid: str) -> types.TransactionStatus:
+    def get_transaction_status(self, txn_uuid: types.TxnUuid) -> types.TransactionStatus:
         # tells a caller whether a transaction is still open or already committed — the way to learn the outcome
         # of a commit whose response was lost (retrying commit() itself is also safe: it's idempotent)
         response: httpx.Response = self._client.get(f"{self._base}/transactions/{txn_uuid}", headers=self._headers())

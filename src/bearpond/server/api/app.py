@@ -10,7 +10,7 @@ from starlette.status import (
     HTTP_500_INTERNAL_SERVER_ERROR,
 )
 
-from .. import repository, server as server_module, server_metadata_store, transaction, utils
+from .. import metadata_store, repository, server as server_module, transaction, utils
 from .. import ui as ui_module
 from . import commits, files, manifest, repos, transactions
 
@@ -82,14 +82,14 @@ def handle_repository_error(request: Request, exc: repository.RepositoryError) -
 # ----------------------------------------------------------------------------------------------------------------------
 # a MetadataConflictError should normally be translated to TransactionConflictError inside the repository — if one
 # ever escapes, it's still a conflict, not a server fault
-@app.exception_handler(server_metadata_store.MetadataConflictError)
-def handle_metadata_conflict(request: Request, exc: server_metadata_store.MetadataConflictError) -> JSONResponse:
+@app.exception_handler(metadata_store.MetadataConflictError)
+def handle_metadata_conflict(request: Request, exc: metadata_store.MetadataConflictError) -> JSONResponse:
     return JSONResponse(status_code=HTTP_409_CONFLICT, content={"detail": str(exc)})
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-@app.exception_handler(server_metadata_store.MetadataStoreError)
-def handle_metadata_store_error(request: Request, exc: server_metadata_store.MetadataStoreError) -> JSONResponse:
+@app.exception_handler(metadata_store.MetadataStoreError)
+def handle_metadata_store_error(request: Request, exc: metadata_store.MetadataStoreError) -> JSONResponse:
     return JSONResponse(status_code=HTTP_500_INTERNAL_SERVER_ERROR, content={"detail": str(exc)})
 
 

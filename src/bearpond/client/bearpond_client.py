@@ -21,7 +21,7 @@ CONFIG_NAME = "config.json"
 
 # ======================================================================================================================
 class FileState(NamedTuple):
-    sha256: str
+    sha256: types.Sha256
     size: int
 
 
@@ -512,7 +512,7 @@ class BearpondClient:
             raise server_client.BearpondError(f"modified since staged — re-stage with `bearpond add`: {drifted}")
         
         # the commit message is declared at begin time — it's the transaction's intent, not a commit-call parameter
-        txn_uuid: str = server.begin_transaction(manifest.model_copy(update={"reason": message}))
+        txn_uuid: types.TxnUuid = server.begin_transaction(manifest.model_copy(update={"reason": message}))
         result: types.CommitResponse
         try:
             server.upload_files(txn_uuid, files)
@@ -602,7 +602,7 @@ class BearpondClient:
                 expected_file_state: FileState = target_files[rel_path]
                 
                 # test the file sha256
-                actual_sha256: str = server.download_file(rel_path, dest_path)
+                actual_sha256: types.Sha256 = server.download_file(rel_path, dest_path)
                 if actual_sha256 != expected_file_state.sha256:
                     dest_path.unlink(missing_ok=True)
                     raise server_client.BearpondError(f"checksum mismatch after fetching {rel_path}")

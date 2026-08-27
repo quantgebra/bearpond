@@ -1,8 +1,8 @@
 import conftest
 from bearpond import types
 from bearpond.server import metadata_store
+from bearpond.server import repo_metadata_store
 from bearpond.server import repository
-from bearpond.server import sqlite_server_metadata_store
 
 PATH_A = "year=2024/month=01/a.parquet"
 PATH_B = "year=2024/month=02/b.parquet"
@@ -21,7 +21,7 @@ def test_get_manifest_reconstructs_historical_seqs(repo: repository.Repository) 
     conftest.commit_files(repo, {PATH_B: CONTENT_B})  # seq 2
     conftest.remove_files(repo, {PATH_A: CONTENT_A})  # seq 3
 
-    store: metadata_store.MetadataStore = repo.metadata_store
+    store: repo_metadata_store.RepoMetadataStore = repo.metadata_store
 
     # each seq reconstructs the lake exactly as it was — additions visible from their seq on, removals absent from theirs
     assert paths_of(store.get_manifest(1)) == [PATH_A]
@@ -39,7 +39,7 @@ def test_list_directory_splits_files_and_subdirectories(repo: repository.Reposit
         repo,
         {PATH_A: CONTENT_A, PATH_B: CONTENT_B, "year=2025/month=01/c.parquet": b"gamma", "top.parquet": b"top"},
     )
-    store: metadata_store.MetadataStore = repo.metadata_store
+    store: repo_metadata_store.RepoMetadataStore = repo.metadata_store
 
     # a prefix whose children are all deeper rolls up into directory names, not files
     year_page: metadata_store.DirectoryPage = store.list_directory("year=2024/", limit=100)
@@ -66,7 +66,7 @@ def test_list_directory_splits_files_and_subdirectories(repo: repository.Reposit
 def test_list_directory_paginates_files_by_cursor(repo: repository.Repository) -> None:
     files: dict[str, bytes] = {f"year=2024/month=01/part-{i}.parquet": f"content-{i}".encode() for i in range(5)}
     conftest.commit_files(repo, files)
-    store: metadata_store.MetadataStore = repo.metadata_store
+    store: repo_metadata_store.RepoMetadataStore = repo.metadata_store
 
     first_page: metadata_store.DirectoryPage = store.list_directory("year=2024/month=01/", limit=2)
     assert [f.path for f in first_page.files] == [
@@ -94,7 +94,7 @@ def test_get_commit_record_page_paginates_newest_first(repo: repository.Reposito
     conftest.commit_files(repo, {PATH_A: CONTENT_A})
     conftest.commit_files(repo, {PATH_B: CONTENT_B})
     conftest.remove_files(repo, {PATH_A: CONTENT_A})
-    store: metadata_store.MetadataStore = repo.metadata_store
+    store: repo_metadata_store.RepoMetadataStore = repo.metadata_store
 
     first: types.CommitHistoryPage = store.get_commit_record_page(limit=2)
     assert [r.seq for r in first.records] == [3, 2]
@@ -123,7 +123,7 @@ def test_get_commit_record_by_any_key(repo: repository.Repository) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_get_commit_record_by_any_key_returns_none_for_unknown(repo: repository.Repository) -> None:
-    assert repo.metadata_store.get_commit_record_by_txn_uuid("no-such-txn") is None
+    assert repo.metadata_store.get_commit_record_by_txn_uuid(types.TxnUuid("no-such-txn")) is None
     assert repo.metadata_store.get_commit_record_by_commit_hash("0" * 64) is None
     assert repo.metadata_store.get_commit_record_by_commit_seq(999) is None
 
@@ -133,7 +133,7 @@ def test_get_manifest_created_at_matches_its_commit(repo: repository.Repository)
     conftest.commit_files(repo, {PATH_A: CONTENT_A})
     conftest.commit_files(repo, {PATH_B: CONTENT_B})
 
-    store: metadata_store.MetadataStore = repo.metadata_store
+    store: repo_metadata_store.RepoMetadataStore = repo.metadata_store
     records: list[types.CommitRecord] = store.get_commit_record_list()
 
     first: types.Manifest | None = store.get_manifest(1)
@@ -163,7 +163,7 @@ def test_commit_hash_is_self_certifying(repo: repository.Repository) -> None:
     conftest.commit_files(repo, {PATH_A: CONTENT_A})
 
     record: types.CommitRecord | None = repo.metadata_store.get_commit_record_list()[0]
-    recomputed: str = sqlite_server_metadata_store.compute_commit_hash(
+    recomputed: str = metadata_store.compute_commit_hash(
         record.parent_commit_hash,
         record.seq,
         record.committed_at,
@@ -183,10 +183,10 @@ def test_commit_hash_ignores_added_and_removed_order() -> None:
     removed: list[types.FileMetadata] = [conftest.file_meta("year=2023/x.parquet", b"x"), conftest.file_meta("year=2023/y.parquet", b"y")]
     updated: list[types.UpdatedFileMetadata] = []
 
-    forward: str = sqlite_server_metadata_store.compute_commit_hash(
+    forward: str = metadata_store.compute_commit_hash(
         None, 1, "2026-01-01T00:00:00+00:00", added, removed, updated, None, None
     )
-    shuffled: str = sqlite_server_metadata_store.compute_commit_hash(
+    shuffled: str = metadata_store.compute_commit_hash(
         None, 1, "2026-01-01T00:00:00+00:00", list(reversed(added)), list(reversed(removed)), list(reversed(updated)), None, None
     )
     assert forward == shuffled

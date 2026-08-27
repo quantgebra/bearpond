@@ -5,9 +5,9 @@ from typing import Optional
 from . import config
 from . import metadata_store
 from . import object_store
+from . import repo_metadata_store
 from . import repository
-from . import server_metadata_store
-from . import sqlite_server_metadata_store
+from . import sqlite_metadata_store
 
 
 # ======================================================================================================================
@@ -24,8 +24,8 @@ class Server:
         self.config: config.ServerConfig = server_config
         
         # create the MetadataStore
-        self.metadata_store: server_metadata_store.ServerMetadataStore = (
-            sqlite_server_metadata_store.SqliteServerMetadataStore(server_config.db_path))
+        self.metadata_store: metadata_store.MetadataStore = (
+            sqlite_metadata_store.SqliteMetadataStore(server_config.db_path))
         
         # create the ObjectStore
         self.object_store: object_store.ObjectStore = object_store.ObjectStore(server_config.object_store_root)
@@ -34,8 +34,8 @@ class Server:
         self._name_2_repo: dict[str, repository.Repository] = {}
 
     # ------------------------------------------------------------------------------------------------------------------
-    def _repo_metadata_store(self, name: str) -> metadata_store.MetadataStore:
-        return metadata_store.MetadataStore(name, self.metadata_store)
+    def _repo_metadata_store(self, name: str) -> repo_metadata_store.RepoMetadataStore:
+        return repo_metadata_store.RepoMetadataStore(name, self.metadata_store)
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_repository(self, name: str) -> repository.Repository:

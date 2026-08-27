@@ -9,7 +9,6 @@ from bearpond import types
 from bearpond.client import bearpond_client
 from bearpond.client import server_client
 from bearpond.client import cli
-from bearpond.server import metadata_store
 from bearpond.server import repository
 
 HIVE_PATH = "year=2024/month=01/part.parquet"

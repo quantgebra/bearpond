@@ -1,5 +1,3 @@
-import hashlib
-import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -8,7 +6,7 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from .. import types
-from . import server_metadata_store
+from . import metadata_store
 from . import transaction
 
 # validates/serializes the added/removed FileMetadata lists stored as JSON text in the commits and transactions tables
@@ -18,36 +16,8 @@ _file_meta_list_adapter: TypeAdapter[list[types.FileMetadata]] = TypeAdapter(lis
 _updated_meta_list_adapter: TypeAdapter[list[types.UpdatedFileMetadata]] = TypeAdapter(list[types.UpdatedFileMetadata])
 
 
-# ----------------------------------------------------------------------------------------------------------------------
-def compute_commit_hash(
-    parent_commit_hash: str | None,
-    seq: int,
-    committed_at: str,
-    added: list[types.FileMetadata],
-    removed: list[types.FileMetadata],
-    updated: list[types.UpdatedFileMetadata],
-    user: str | None,
-    reason: str | None,
-) -> str:
-    # fixed field order and compact separators make the hash reproducible from the exported record alone.
-    # added/removed/updated are sorted by path before serializing — they're semantically sets, and the hash must
-    # depend only on the change's content, never on list order (same reason git stores tree entries sorted by name)
-    payload: dict = {
-        "parent_commit_hash": parent_commit_hash,
-        "seq": seq,
-        "committed_at": committed_at,
-        "added": [f.model_dump() for f in sorted(added, key=lambda f: f.path)],
-        "removed": [f.model_dump() for f in sorted(removed, key=lambda f: f.path)],
-        "updated": [f.model_dump() for f in sorted(updated, key=lambda f: f.path)],
-        "user": user,
-        "reason": reason,
-    }
-    canonical: str = json.dumps(payload, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
-
-
 # ======================================================================================================================
-class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
+class SqliteMetadataStore(metadata_store.MetadataStore):
 
     # one database per server. each table carries a repo column so multiple repositories can share the same file.
     # seq remains per-repo, and txn_uuid is globally unique.
@@ -172,7 +142,7 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
-    def list_directory(self, repo: str, prefix: str, limit: int, cursor: str | None = None) -> "server_metadata_store.DirectoryPage":
+    def list_directory(self, repo: str, prefix: str, limit: int, cursor: str | None = None) -> "metadata_store.DirectoryPage":
         # S3-style prefix+delimiter ("/") listing over the live mapping: files directly under the prefix, and the
         # distinct immediate subdirectories rolled up in sqlite (the standard's Contents + CommonPrefixes).
         # GLOB rather than LIKE — LIKE is case-insensitive for ASCII in sqlite (wrong for paths), and a
@@ -196,7 +166,7 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
 
         truncated: bool = len(file_rows) > limit
         page_rows: list[tuple] = file_rows[:limit]
-        return server_metadata_store.DirectoryPage(
+        return metadata_store.DirectoryPage(
             files=[types.FileMetadata(path=row[0], sha256=row[1], size=row[2]) for row in page_rows],
             directories=[row[0] for row in dir_rows],
             next_cursor=page_rows[-1][0] if truncated and page_rows else None,
@@ -254,7 +224,7 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
         return record
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_commit_record_by_txn_uuid(self, repo: str, txn_uuid: str) -> types.CommitRecord | None:
+    def get_commit_record_by_txn_uuid(self, repo: str, txn_uuid: types.TxnUuid) -> types.CommitRecord | None:
         return self._get_commit_record_by(repo, "txn_uuid", txn_uuid)
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -295,22 +265,22 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
                     removed_paths: set[str] = {f.path for f in txn.removed}
                     updated_paths: set[str] = {f.path for f in txn.updated}
                     for path in added_paths & removed_paths:
-                        raise server_metadata_store.MetadataConflictError(f"path cannot be both added and removed: {path}")
+                        raise metadata_store.MetadataConflictError(f"path cannot be both added and removed: {path}")
                     for path in added_paths & updated_paths:
-                        raise server_metadata_store.MetadataConflictError(f"path cannot be both added and updated: {path}")
+                        raise metadata_store.MetadataConflictError(f"path cannot be both added and updated: {path}")
                     for path in removed_paths & updated_paths:
-                        raise server_metadata_store.MetadataConflictError(f"path cannot be both removed and updated: {path}")
+                        raise metadata_store.MetadataConflictError(f"path cannot be both removed and updated: {path}")
 
                     # an added path must not be live at all — different content requires a remove first, identical
                     # content is a no-op, and both are rejected: every recorded commit changes the lake by construction
                     for added_file in txn.added:
                         if added_file.path in current:
                             if current[added_file.path].sha256 != added_file.sha256:
-                                raise server_metadata_store.MetadataConflictError(
+                                raise metadata_store.MetadataConflictError(
                                     f"{added_file.path} already exists in the lake with different content — "
                                     f"remove it before adding new content"
                                 )
-                            raise server_metadata_store.MetadataConflictError(
+                            raise metadata_store.MetadataConflictError(
                                 f"{added_file.path} already exists in the lake with identical content — "
                                 f"re-adding it is a no-op"
                             )
@@ -318,9 +288,9 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
                     # a removal is only safe against the exact content the client observed when it decided to remove
                     for removed_file in txn.removed:
                         if removed_file.path not in current:
-                            raise server_metadata_store.MetadataConflictError(f"path to remove no longer exists: {removed_file.path}")
+                            raise metadata_store.MetadataConflictError(f"path to remove no longer exists: {removed_file.path}")
                         if current[removed_file.path].sha256 != removed_file.sha256:
-                            raise server_metadata_store.MetadataConflictError(
+                            raise metadata_store.MetadataConflictError(
                                 f"{removed_file.path} has changed since it was declared for removal — "
                                 f"remove is only safe against the exact content that was observed"
                             )
@@ -329,14 +299,14 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
                     # actually be different — otherwise the commit would be a no-op
                     for updated_file in txn.updated:
                         if updated_file.path not in current:
-                            raise server_metadata_store.MetadataConflictError(f"path to update no longer exists: {updated_file.path}")
+                            raise metadata_store.MetadataConflictError(f"path to update no longer exists: {updated_file.path}")
                         if current[updated_file.path].sha256 != updated_file.old_sha256:
-                            raise server_metadata_store.MetadataConflictError(
+                            raise metadata_store.MetadataConflictError(
                                 f"{updated_file.path} has changed since it was declared for update — "
                                 f"update is only safe against the exact content that was observed"
                             )
                         if updated_file.old_sha256 == updated_file.new_sha256:
-                            raise server_metadata_store.MetadataConflictError(
+                            raise metadata_store.MetadataConflictError(
                                 f"{updated_file.path} old and new content are identical — updating it is a no-op"
                             )
 
@@ -350,7 +320,7 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
                         "SELECT commit_hash FROM commits WHERE repo = ? ORDER BY seq DESC LIMIT 1", (repo,)
                     ).fetchone()
                     parent_commit_hash: str | None = parent_row[0] if parent_row is not None else None
-                    commit_hash: str = compute_commit_hash(
+                    commit_hash: str = metadata_store.compute_commit_hash(
                         parent_commit_hash, seq, committed_at, txn.added, txn.removed, txn.updated, txn.user, txn.reason
                     )
 
@@ -476,7 +446,7 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
             self._conn.commit()
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_transaction(self, repo: str, txn_uuid: str) -> transaction.Transaction | None:
+    def get_transaction(self, repo: str, txn_uuid: types.TxnUuid) -> transaction.Transaction | None:
         with self._lock:
             row: tuple | None = self._conn.execute(
                 "SELECT created_at, added, removed, updated, user, reason FROM transactions WHERE repo = ? AND txn_uuid = ?",
@@ -506,7 +476,7 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
         return result
 
     # ------------------------------------------------------------------------------------------------------------------
-    def record_uploaded_file(self, repo: str, txn_uuid: str, file: types.FileMetadata) -> None:
+    def record_uploaded_file(self, repo: str, txn_uuid: types.TxnUuid, file: types.FileMetadata) -> None:
         # INSERT OR REPLACE so a retried upload of the same path is idempotent — the declared hash is fixed at
         # begin time, so a retry can only ever rewrite the same row
         with self._lock:
@@ -517,7 +487,7 @@ class SqliteServerMetadataStore(server_metadata_store.ServerMetadataStore):
             self._conn.commit()
 
     # ------------------------------------------------------------------------------------------------------------------
-    def delete_transaction(self, repo: str, txn_uuid: str) -> None:
+    def delete_transaction(self, repo: str, txn_uuid: types.TxnUuid) -> None:
         with self._lock:
             self._conn.execute(
                 "DELETE FROM transaction_uploaded_files WHERE repo = ? AND txn_uuid = ?", (repo, txn_uuid)

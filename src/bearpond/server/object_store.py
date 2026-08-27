@@ -3,6 +3,7 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from .. import types
 from . import utils
 
 
@@ -25,16 +26,16 @@ class ObjectStore:
         self.objects_root: Path = objects_root
 
     # ------------------------------------------------------------------------------------------------------------------
-    def get_location_for_address(self, address: str) -> Path:
+    def get_location_for_address(self, address: types.Sha256) -> Path:
         # one level of fanout (objects/ab/abcdef...) so a large lake doesn't pile every object into one directory
         return self.objects_root / address[:2] / address
 
     # ------------------------------------------------------------------------------------------------------------------
-    def contains_address(self, address: str) -> bool:
+    def contains_address(self, address: types.Sha256) -> bool:
         return self.get_location_for_address(address).is_file()
 
     # ------------------------------------------------------------------------------------------------------------------
-    async def upload(self, address: str, stream: AsyncIterator[bytes], expected_size: int) -> None:
+    async def upload(self, address: types.Sha256, stream: AsyncIterator[bytes], expected_size: int) -> None:
         # stream the content to a temp file next to its final location while computing size and sha256. Only when
         # both match the declared values do we publish the object at its content-addressed path. If the object is
         # already stored, the temp file is discarded — but we still consume and verify the stream so a client that
@@ -53,7 +54,7 @@ class ObjectStore:
             # flush before the rename so an acknowledged upload is a durable upload
             f.flush()
             os.fsync(f.fileno())
-        actual_address: str = digest.hexdigest()
+        actual_address: types.Sha256 = types.Sha256(digest.hexdigest())
 
         if actual_address != address:
             tmp_path.unlink(missing_ok=True)

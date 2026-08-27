@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, NewType
 
 from pydantic import BaseModel
 
@@ -6,11 +6,19 @@ from pydantic import BaseModel
 # both depend on this instead of on each other, staying independently deployable while sharing one definition of
 # the shapes they exchange, instead of two hand-kept-in-sync copies
 
+# a transaction's identifier — a plain str at runtime (zero overhead), but distinct to the type checker so it can't
+# be passed where a sha256 or a path is expected, or vice versa
+TxnUuid = NewType("TxnUuid", str)
+
+# a file content's hash — distinct from a path, a txn_uuid, or a commit_hash (a different hash over different
+# content: the commit's change, not a file's bytes), even though all are hex sha256 strings at runtime
+Sha256 = NewType("Sha256", str)
+
 
 # ======================================================================================================================
 class FileMetadata(BaseModel):
     path: str
-    sha256: str
+    sha256: Sha256
     size: int
 
 
@@ -19,9 +27,9 @@ class FileMetadata(BaseModel):
 # self-describing and the server can verify the update against the exact content the client observed.
 class UpdatedFileMetadata(BaseModel):
     path: str
-    old_sha256: str
+    old_sha256: Sha256
     old_size: int
-    new_sha256: str
+    new_sha256: Sha256
     new_size: int
 
 
@@ -43,7 +51,7 @@ class TransactionManifest(BaseModel):
 
 # ======================================================================================================================
 class BeginTransactionResponse(BaseModel):
-    txn_uuid: str
+    txn_uuid: TxnUuid
     added_files: list[str]
     removed_files: list[str]
     updated_files: list[str]
@@ -59,7 +67,7 @@ class CommitResponse(BaseModel):
 
 # ======================================================================================================================
 class TransactionStatus(BaseModel):
-    txn_uuid: str
+    txn_uuid: TxnUuid
     status: Literal["open", "committed"]
     seq: int | None  # the manifest version the commit produced — set only once status is "committed"
     created_at: str | None = None  # when the transaction was begun, stamped by the server (ISO 8601)
@@ -84,7 +92,7 @@ class Manifest(BaseModel):
 class CommitRecord(BaseModel):
     commit_hash: str
     parent_commit_hash: str | None
-    txn_uuid: str
+    txn_uuid: TxnUuid
     seq: int
     committed_at: str
     # when the transaction was begun, stamped by the server (ISO 8601). Optional because commits recorded before

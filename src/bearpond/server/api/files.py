@@ -4,9 +4,9 @@ from pydantic import BaseModel
 from starlette.status import HTTP_404_NOT_FOUND
 
 from ... import types
+from .. import metadata_store
 from .. import repository
 from .. import server as server_module
-from .. import server_metadata_store
 from . import dependencies
 
 router: APIRouter = APIRouter(prefix="/repos/{repo_name}", tags=["files"], dependencies=[Depends(dependencies.require_auth)])
@@ -45,7 +45,7 @@ def get_file(
         result = FileResponse(repo.object_store.get_location_for_address(current.sha256))
     else:
         prefix: str = rel_path.rstrip("/") + "/" if rel_path else ""
-        page: server_metadata_store.DirectoryPage = repo.metadata_store.list_directory(prefix, limit, cursor)
+        page: metadata_store.DirectoryPage = repo.metadata_store.list_directory(prefix, limit, cursor)
         if not page.files and not page.directories and cursor is None and rel_path:
             raise HTTPException(HTTP_404_NOT_FOUND, f"file not found: {rel_path}")
         result = DirectoryListing(

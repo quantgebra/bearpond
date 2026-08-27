@@ -32,7 +32,7 @@ class TransactionConflictError(TransactionError):
 # persisted CommitRecord, so no dict↔list conversion is needed anywhere along the lifecycle
 @dataclass
 class Transaction:
-    txn_uuid: str
+    txn_uuid: types.TxnUuid
     # when the transaction was begun, stamped by the server (ISO 8601) — client clocks are never trusted
     created_at: str
     added: list[types.FileMetadata]

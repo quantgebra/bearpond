@@ -8,6 +8,7 @@ from typing import TypeVar
 from .. import types
 from . import metadata_store
 from . import object_store
+from . import repo_metadata_store
 from . import transaction
 
 # serializes commits so the metadata commit and cleanup never interleave between transactions
@@ -51,13 +52,13 @@ class Repository:
     def __init__(
             self,
             name: str,
-            my_metadata_store: metadata_store.MetadataStore,
+            my_metadata_store: repo_metadata_store.RepoMetadataStore,
             obj_store: object_store.ObjectStore,
     ) -> None:
         # a repository is a namespace in the metadata store. content-addressed objects live in a server-wide store
         # shared across repositories, so identical bytes are stored once regardless of repo.
         self.name: str = name
-        self.metadata_store: metadata_store.MetadataStore = my_metadata_store
+        self.metadata_store: repo_metadata_store.RepoMetadataStore = my_metadata_store
         self.object_store: object_store.ObjectStore = obj_store
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -143,7 +144,7 @@ class Repository:
         # never supplies it. user and reason are declared here too, at begin time — they're properties of the
         # transaction's intent, not of the commit call that finalizes it.
         txn: transaction.Transaction = transaction.Transaction(
-            txn_uuid=uuid.uuid4().hex,
+            txn_uuid=types.TxnUuid(uuid.uuid4().hex),
             created_at=datetime.now(timezone.utc).isoformat(),
             added=added,
             removed=removed,
@@ -159,14 +160,14 @@ class Repository:
         return txn
     
     # ------------------------------------------------------------------------------------------------------------------
-    def get_transaction(self, txn_uuid: str) -> transaction.Transaction:
+    def get_transaction(self, txn_uuid: types.TxnUuid) -> transaction.Transaction:
         txn: transaction.Transaction | None = self.metadata_store.get_transaction(txn_uuid)
         if txn is None:
             raise transaction.TransactionNotFoundError(f"unknown transaction: {txn_uuid}")
         return txn
     
     # ------------------------------------------------------------------------------------------------------------------
-    async def upload_file(self, txn_uuid: str, rel_path: str, chunks: AsyncIterator[bytes]) -> types.FileMetadata:
+    async def upload_file(self, txn_uuid: types.TxnUuid, rel_path: str, chunks: AsyncIterator[bytes]) -> types.FileMetadata:
         # get and validate the transaction
         txn: transaction.Transaction = self.get_transaction(txn_uuid)
         
@@ -174,7 +175,7 @@ class Repository:
         added_hit: types.FileMetadata | None = self._find_by_path(txn.added, rel_path)
         updated_hit: types.UpdatedFileMetadata | None = self._find_by_path(txn.updated, rel_path)
         if added_hit is not None:
-            expected_sha256: str = added_hit.sha256
+            expected_sha256: types.Sha256 = added_hit.sha256
             expected_size: int = added_hit.size
         elif updated_hit is not None:
             expected_sha256 = updated_hit.new_sha256
@@ -201,7 +202,7 @@ class Repository:
         return uploaded_file
     
     # ------------------------------------------------------------------------------------------------------------------
-    def commit(self, txn_uuid: str) -> types.CommitResponse:
+    def commit(self, txn_uuid: types.TxnUuid) -> types.CommitResponse:
         txn: transaction.Transaction | None = self.metadata_store.get_transaction(txn_uuid)
         
         # attempt to find a commit record corresponding to the txn_uuid if we can't find an open Transaction
@@ -259,7 +260,7 @@ class Repository:
         return result
     
     # ------------------------------------------------------------------------------------------------------------------
-    def abort(self, txn_uuid: str) -> None:
+    def abort(self, txn_uuid: types.TxnUuid) -> None:
         # TODO: MBZ: 20260826: Perhaps we should remove the added objects? I suppose GC will do that
         # refuse to abort an unknown transaction, matching the get-then-abort behavior the API used to drive
         self.get_transaction(txn_uuid)

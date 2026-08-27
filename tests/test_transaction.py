@@ -4,7 +4,6 @@ import pytest
 
 import conftest
 from bearpond import types
-from bearpond.server import metadata_store
 from bearpond.server import utils
 from bearpond.server import repository
 from bearpond.server import transaction
