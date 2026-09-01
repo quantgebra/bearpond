@@ -496,7 +496,9 @@ def test_commit_update_replaces_file_on_server(
 
     manifest: types.Manifest = client.get_manifest()
     assert [f.path for f in manifest.files] == [PATH_A, PATH_B]
-    manifest_by_path: dict[str, bearpond_client.FileState] = {f.path: bearpond_client.FileState(size=f.size, sha256=f.sha256) for f in manifest.files}
+    manifest_by_path: dict[str, bearpond_client.FileState] = {}
+    for f in manifest.files:
+        manifest_by_path[f.path] = bearpond_client.FileState(size=f.size, sha256=f.sha256)
     assert manifest_by_path[PATH_A].sha256 == conftest.sha256_hex(new_content)
     assert manifest_by_path[PATH_B].sha256 == conftest.sha256_hex(CONTENT_B)
 

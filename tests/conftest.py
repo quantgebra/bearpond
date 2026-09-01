@@ -34,7 +34,9 @@ def file_meta(rel_path: str, content: bytes) -> types.FileMetadata:
 # ----------------------------------------------------------------------------------------------------------------------
 def commit_files(repo: repository.Repository, files: dict[str, bytes]) -> types.CommitResponse:
     # drives files through the full transaction machinery — the standard way tests set up lake state
-    added: list[types.FileMetadata] = [file_meta(path, content) for path, content in files.items()]
+    added: list[types.FileMetadata] = []
+    for path, content in files.items():
+        added.append(file_meta(path, content))
     txn: transaction.Transaction = repo.begin_transaction(types.TransactionManifest(added=added))
     for path, content in files.items():
         upload_bytes(repo, txn.txn_uuid, path, content)
@@ -44,7 +46,9 @@ def commit_files(repo: repository.Repository, files: dict[str, bytes]) -> types.
 # ----------------------------------------------------------------------------------------------------------------------
 def remove_files(repo: repository.Repository, files: dict[str, bytes]) -> types.CommitResponse:
     # a removal-only transaction over files known to be in the lake with the given content
-    removed: list[types.FileMetadata] = [file_meta(path, content) for path, content in files.items()]
+    removed: list[types.FileMetadata] = []
+    for path, content in files.items():
+        removed.append(file_meta(path, content))
     txn: transaction.Transaction = repo.begin_transaction(types.TransactionManifest(removed=removed))
     return repo.commit(txn.txn_uuid)
 

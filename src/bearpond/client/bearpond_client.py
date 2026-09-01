@@ -57,7 +57,11 @@ class SubsetQuery(NamedTuple):
     # ------------------------------------------------------------------------------------------------------------------
     def filter_manifest(self, manifest: types.Manifest) -> dict[str, "FileState"]:
         # the subset of the manifest a workspace is responsible for under this view
-        return {f.path: FileState(sha256=f.sha256, size=f.size) for f in manifest.files if self.matches(f.path)}
+        result: dict[str, FileState] = {}
+        for f in manifest.files:
+            if self.matches(f.path):
+                result[f.path] = FileState(sha256=f.sha256, size=f.size)
+        return result
 
 
 # ======================================================================================================================
@@ -207,7 +211,8 @@ class BearpondClient:
         pending_path: Path = self.workdir / STATE_DIR_NAME / PENDING_NAME
         if pending_path.exists():
             raw: dict[str, list] = json.loads(pending_path.read_text(encoding="utf-8"))
-            pending = {path: FileState(sha256=entry[0], size=entry[1]) for path, entry in raw.items()}
+            for path, entry in raw.items():
+                pending[path] = FileState(sha256=entry[0], size=entry[1])
         return pending
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -505,7 +510,10 @@ class BearpondClient:
             if not local_path.is_file():
                 raise server_client.BearpondError(f"staged file is missing: {rel_path} (re-stage with `bearpond add`)")
         staged_by_path: dict[str, types.FileMetadata] = {f.path: f for f in manifest.added}
-        staged_by_path.update({f.path: types.FileMetadata(path=f.path, sha256=f.new_sha256, size=f.new_size) for f in manifest.updated})
+        for updated_file in manifest.updated:
+            staged_by_path[updated_file.path] = types.FileMetadata(
+                path=updated_file.path, sha256=updated_file.new_sha256, size=updated_file.new_size
+            )
         current: list[types.FileMetadata] = server_client.ServerClient.declare_files(files)
         drifted: list[str] = [f.path for f in current if staged_by_path[f.path].sha256 != f.sha256]
         if drifted:

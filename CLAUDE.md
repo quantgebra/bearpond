@@ -487,3 +487,88 @@ def _load_query(self) -> SubsetQuery: ...
 ```
 
 This rule is about the type that crosses function/method boundaries, not about storage formats: the on-disk JSON for a `SubsetQuery` may stay a plain nested list if that's the convenient serialization, as long as the value is wrapped in the named type at the load/save boundary and travels as that type everywhere else. If an inner level itself earns a name (e.g. a `QueryGroup` with its own behavior), wrap that too.
+
+## 24. Return the domain type a method's name promises; parse wire formats at the boundary
+
+A method's return value is the concept its name says it produces, in a named type — never a transport representation the caller must interpret. Raw JSON dicts and byte streams are parsed into a `BaseModel`/`NamedTuple`/plain Python type at the layer that receives them, and never leak upward past that layer. If a caller converts a method's return value before it can use it, the method returned the wrong thing.
+
+```python
+# Not this: the raw parsed JSON escapes, and the caller re-derives the shape it actually wants
+def list_repositories(self) -> list[dict]:
+    response: httpx.Response = self._client.get("/repos", headers=self._headers())
+    self._raise_for_status(response)
+    return response.json()
+...
+names: list[str] = [entry["name"] for entry in client.list_repositories()]
+
+# This: list_repositories() returns exactly what its name promises
+def list_repositories(self) -> list[str]:
+    response: httpx.Response = self._client.get("/repos", headers=self._headers())
+    self._raise_for_status(response)
+    return [entry["name"] for entry in response.json()]
+```
+
+## 25. No keyword-only parameter marker (`*`)
+
+Never use a bare `*` in a parameter list to force later parameters to be keyword-only. Every parameter stays callable either positionally or by keyword.
+
+```python
+# Not this:
+def sync(self, *, full: bool) -> None: ...
+sync(full=True)
+
+# This:
+def sync(self, full: bool) -> None: ...
+sync(True)
+```
+
+Reasoning: `*` is unexplained syntax to anyone not already fluent in Python, and it forces a specific calling convention on every caller for a benefit (preventing an ambiguous positional call) that isn't worth that cost here. Existing call sites that already pass the argument by keyword (`sync(full=True)`) keep working unchanged after `*` is removed — keyword-only is a restriction on top of normal calling, not a different one.
+
+## 26. The calls that matter are the steak, not the garnish
+
+A block of code usually exists to make one or two calls that are the actual point of it — the rest is scaffolding around them. That scaffolding must never out-compete the calls it's serving: if bookkeeping (a running count, an accumulated list, a second pass to add something up) sits at the same visual weight as the calls that matter, a reader scanning the function can't tell the steak from the garnish. The fix isn't merely stylistic — if the value that bookkeeping produces isn't read by anything, delete the bookkeeping, don't just tidy it, so the calls that matter are the only thing left to look at.
+
+```python
+# Not this: the actual work -- two method calls -- is buried under bookkeeping for a count nobody reads
+files_uploaded: int = sum(1 for _ in self.upload_files(txn_id, files))
+files_declared: int = len(files)
+logger.info("uploaded %d of %d declared files", files_uploaded, files_declared)
+
+# This: nothing competes with the call that matters
+self.upload_files(txn_id, files)
+```
+
+The two-loops-into-one collapse implied above is a symptom of applying this, not the rule itself: a loop that exists only to isolate its own now-unused accumulator has no reason left to be separate once the accumulator is gone. Don't over-apply the symptom — if a second pass genuinely needs the first pass's complete result before it can start (e.g. building an index in pass one that pass two looks values up in), the passes stay separate on purpose, and that separation is itself doing real work, not obscuring it. The actual test is always: read the block and ask which lines are the reason it exists; everything else is justified only as long as something downstream reads what it produces.
+
+## 27. No chaining a lookup-or-create with a mutation
+
+`d.setdefault(k, []).append(v)` performs two operations — find-or-create the list, then mutate it — behind one line, so a reader has to unpack the chain to see either step. Split them: bind the lookup-or-create to a local variable, then mutate it on its own line.
+
+```python
+# Not this: lookup-or-create and mutation fused into one line
+path_2_versions.setdefault(added_file.path, []).append(added_file)
+
+# This: the two operations are two visible lines
+versions_for_path: list[types.FileMetadata] = path_2_versions.setdefault(added_file.path, [])
+versions_for_path.append(added_file)
+```
+
+This is one instance of a broader principle: favor explicit, unclever code over terse code, even when the terse form is idiomatic Python. A reader should be able to scan a line and know it does exactly one thing. See also rule 28.
+
+## 28. Comprehensions are for reshaping, not constructing
+
+A comprehension is for reshaping values already in hand — a trivial value pick or transform (a bare attribute/name, a simple expression, string formatting: `{name.lower() for name in repos}`, `[p.stem.lower() for p in paths]`). Once the body is a constructor call, a method call that does real work, or anything with a side effect, it's doing construction, not reshaping — use an explicit loop instead, so each construction gets its own line and the accumulation is visible.
+
+```python
+# Not this: a comprehension used to construct one FileMetadata per row
+files: list[types.FileMetadata] = [
+    types.FileMetadata(path=row[0], sha256=row[1], size=row[2])
+    for row in rows
+]
+
+# This: explicit loop, construction and accumulation as separate visible steps
+files: list[types.FileMetadata] = []
+for row in rows:
+    file_metadata: types.FileMetadata = types.FileMetadata(path=row[0], sha256=row[1], size=row[2])
+    files.append(file_metadata)
+```

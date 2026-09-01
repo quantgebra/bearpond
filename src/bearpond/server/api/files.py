@@ -48,9 +48,12 @@ def get_file(
         page: metadata_store.DirectoryPage = repo.metadata_store.list_directory(prefix, limit, cursor)
         if not page.files and not page.directories and cursor is None and rel_path:
             raise HTTPException(HTTP_404_NOT_FOUND, f"file not found: {rel_path}")
+        listed_files: list[ListedFile] = []
+        for f in page.files:
+            listed_files.append(ListedFile(name=f.path[len(prefix):], size=f.size))
         result = DirectoryListing(
             path=rel_path,
-            files=[ListedFile(name=f.path[len(prefix):], size=f.size) for f in page.files],
+            files=listed_files,
             directories=[d[len(prefix):] for d in page.directories],
             next_cursor=page.next_cursor,
         )

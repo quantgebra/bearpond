@@ -12,7 +12,9 @@ OTHER_CONTENT = b"other parquet bytes"
 # ----------------------------------------------------------------------------------------------------------------------
 def begin_uploaded_txn(repo: repository.Repository, files: dict[str, bytes]) -> transaction.Transaction:
     # a transaction staged exactly as a client would leave it right before committing
-    added: list[types.FileMetadata] = [conftest.file_meta(path, content) for path, content in files.items()]
+    added: list[types.FileMetadata] = []
+    for path, content in files.items():
+        added.append(conftest.file_meta(path, content))
     txn: transaction.Transaction = repo.begin_transaction(types.TransactionManifest(added=added))
     for path, content in files.items():
         conftest.upload_bytes(repo, txn.txn_uuid, path, content)

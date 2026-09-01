@@ -10,7 +10,10 @@ router: APIRouter = APIRouter(prefix="/repos", tags=["repos"], dependencies=[Dep
 # ----------------------------------------------------------------------------------------------------------------------
 @router.get("")
 def list_repositories(server: server_module.Server = Depends(dependencies.get_server)) -> list[types.RepositoryInfo]:
-    return [types.RepositoryInfo(name=name) for name in server.list_repositories()]
+    repos: list[types.RepositoryInfo] = []
+    for name in server.list_repositories():
+        repos.append(types.RepositoryInfo(name=name))
+    return repos
 
 
 # ----------------------------------------------------------------------------------------------------------------------

@@ -166,8 +166,12 @@ class SqliteMetadataStore(metadata_store.MetadataStore):
 
         truncated: bool = len(file_rows) > limit
         page_rows: list[tuple] = file_rows[:limit]
+        files: list[types.FileMetadata] = []
+        for row in page_rows:
+            file_metadata: types.FileMetadata = types.FileMetadata(path=row[0], sha256=row[1], size=row[2])
+            files.append(file_metadata)
         return metadata_store.DirectoryPage(
-            files=[types.FileMetadata(path=row[0], sha256=row[1], size=row[2]) for row in page_rows],
+            files=files,
             directories=[row[0] for row in dir_rows],
             next_cursor=page_rows[-1][0] if truncated and page_rows else None,
         )
@@ -203,11 +207,11 @@ class SqliteMetadataStore(metadata_store.MetadataStore):
                 ).fetchall()
 
                 # creat the Manifest with the selected FileMetadata
-                manifest = types.Manifest(
-                    seq=seq,
-                    created_at=row[0],
-                    files=[types.FileMetadata(path=r[0], sha256=r[1], size=r[2]) for r in rows],
-                )
+                files: list[types.FileMetadata] = []
+                for r in rows:
+                    file_metadata: types.FileMetadata = types.FileMetadata(path=r[0], sha256=r[1], size=r[2])
+                    files.append(file_metadata)
+                manifest = types.Manifest(seq=seq, created_at=row[0], files=files)
         return manifest
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -396,7 +400,10 @@ class SqliteMetadataStore(metadata_store.MetadataStore):
                 "FROM commits WHERE repo = ? ORDER BY seq, committed_at",
                 (repo,),
             ).fetchall()
-        return [self._row_to_commit_record(row) for row in rows]
+        records: list[types.CommitRecord] = []
+        for row in rows:
+            records.append(self._row_to_commit_record(row))
+        return records
 
     # ------------------------------------------------------------------------------------------------------------------
     def get_commit_record_page(self, repo: str, limit: int, before_seq: int | None = None) -> types.CommitHistoryPage:
@@ -410,8 +417,11 @@ class SqliteMetadataStore(metadata_store.MetadataStore):
 
         truncated: bool = len(rows) > limit
         page_rows: list[tuple] = rows[:limit]
+        records: list[types.CommitRecord] = []
+        for row in page_rows:
+            records.append(self._row_to_commit_record(row))
         return types.CommitHistoryPage(
-            records=[self._row_to_commit_record(row) for row in page_rows],
+            records=records,
             next_cursor=page_rows[-1][3] if truncated and page_rows else None,
         )
 
