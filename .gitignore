@@ -46,3 +46,11 @@ Thumbs.db
 web/node_modules/
 web/dist/
 src/bearpond/server/static/
+
+# personal machine-local symlinks to ~/.agents/AGENTS.py.md — not portable across machines/clones
+/AGENTS.md
+/CLAUDE.md
+
+# private working notes and local dev config — scrubbed from git history, kept local-only from here on
+/notes/
+/config/server.yaml
