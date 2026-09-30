@@ -1,6 +1,6 @@
 # bearpond
 
-A small, transactional data lake — a pond, really — where bears (pandas, Polars) come to play.
+A small, transactional data lake — a pond, really — where bears (Panda and Polar) come to play.
 
 bearpond is a central data server and sync client for versioned collections of files, built for teams. It gives you the semantics of a [lakehouse](https://www.databricks.com/glossary/data-lakehouse) without the lakehouse machinery. Bearpond includes content-addressed storage, atomic commits, and point-in-time manifests from one server process, a metadata store, and an object store — no Spark, no metastore. The default setup uses SQLite and local disk; the architecture is aimed at swapping in Postgres and S3 for HA deployments.
 

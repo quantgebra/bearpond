@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: packages/*/pyproject.toml
+
+      # the packages depend on each other and only bearpond-protocol is needed by both sides, so install all three together
+      - name: Install packages
+        run: python -m pip install -e packages/protocol -e packages/server -e packages/client pytest
+
+      - name: Run tests
+        run: python -m pytest
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      # vite writes the production build straight into the server package's static directory
+      - name: Build web UI
+        working-directory: web
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-static
+          path: packages/server/src/bearpond/server/static
+          if-no-files-found: error
+
+  build:
+    needs: [test, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # the server wheel must include the web UI, so restore the static files before building it
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-static
+          path: packages/server/src/bearpond/server/static
+
+      - name: Build distributions
+        run: |
+          python -m pip install build
+          for package in protocol server client; do
+            python -m build --outdir dist "packages/$package"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
