@@ -47,7 +47,38 @@ class Repository:
         if index < len(files) and files[index].path == rel_path:
             result = files[index]
         return result
-    
+
+    # ------------------------------------------------------------------------------------------------------------------
+    @staticmethod
+    def _diff_manifests(
+            current_files: list[types.FileMetadata], target_files: list[types.FileMetadata]
+    ) -> types.TransactionManifest:
+        # what a caller would need to add/remove/update to turn current_files into target_files
+        current_by_path: dict[str, types.FileMetadata] = {f.path: f for f in current_files}
+        target_by_path: dict[str, types.FileMetadata] = {f.path: f for f in target_files}
+
+        added: list[types.FileMetadata] = []
+        updated: list[types.UpdatedFileMetadata] = []
+        for path, target_file in target_by_path.items():
+            if path not in current_by_path:
+                added.append(target_file)
+            elif current_by_path[path].sha256 != target_file.sha256:
+                updated_file: types.UpdatedFileMetadata = types.UpdatedFileMetadata(
+                    path=path,
+                    old_sha256=current_by_path[path].sha256,
+                    old_size=current_by_path[path].size,
+                    new_sha256=target_file.sha256,
+                    new_size=target_file.size,
+                )
+                updated.append(updated_file)
+
+        removed: list[types.FileMetadata] = []
+        for path, current_file in current_by_path.items():
+            if path not in target_by_path:
+                removed.append(current_file)
+
+        return types.TransactionManifest(added=added, removed=removed, updated=updated)
+
     # ------------------------------------------------------------------------------------------------------------------
     def __init__(
             self,
@@ -268,6 +299,45 @@ class Repository:
         # objects uploaded for this transaction are left in the store as orphans — a background GC reclaims any
         # object not referenced by a committed manifest. This keeps abort simple and stateless.
         self.metadata_store.delete_transaction(txn_uuid)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def revert(self, target_seq: int, user: str | None = None, reason: str | None = None) -> types.CommitResponse:
+        # resolve the current and target states; get_manifest returns None for any seq with no real commit record
+        current_manifest: types.Manifest | None = self.metadata_store.get_manifest(self.metadata_store.get_current_seq())
+        target_manifest: types.Manifest | None = self.metadata_store.get_manifest(target_seq)
+        if target_manifest is None:
+            raise transaction.TransactionValidationError(f"no such manifest version: {target_seq}")
+
+        # what would need to change to make the current state match the target version
+        current_files: list[types.FileMetadata] = current_manifest.files if current_manifest is not None else []
+        diff: types.TransactionManifest = self._diff_manifests(current_files, target_manifest.files)
+
+        # historical content is normally retained forever, but a future GC could reclaim something no longer live
+        # at any retained seq — this is the one place that would surface as a revert failure rather than corruption
+        for added_file in diff.added:
+            if not self.object_store.contains_address(added_file.sha256):
+                raise transaction.TransactionValidationError(
+                    f"cannot revert: content for {added_file.path} is no longer available")
+        for updated_file in diff.updated:
+            if not self.object_store.contains_address(updated_file.new_sha256):
+                raise transaction.TransactionValidationError(
+                    f"cannot revert: content for {updated_file.path} is no longer available")
+
+        # drive the standard begin/commit lifecycle exactly as a client would, reusing every existing conflict
+        # check for free — but skip the upload step, since the content is already resident (verified above)
+        manifest: types.TransactionManifest = types.TransactionManifest(
+            added=diff.added, removed=diff.removed, updated=diff.updated, user=user, reason=reason,
+        )
+        txn: transaction.Transaction = self.begin_transaction(manifest)
+        for added_file in txn.added:
+            self.metadata_store.record_uploaded_file(txn.txn_uuid, added_file)
+        for updated_file in txn.updated:
+            uploaded_file: types.FileMetadata = types.FileMetadata(
+                path=updated_file.path, sha256=updated_file.new_sha256, size=updated_file.new_size
+            )
+            self.metadata_store.record_uploaded_file(txn.txn_uuid, uploaded_file)
+
+        return self.commit(txn.txn_uuid)
 
 
 # ======================================================================================================================

@@ -211,6 +211,16 @@ class ServerClient:
         self._raise_for_status(response)
 
     # ------------------------------------------------------------------------------------------------------------------
+    def revert(self, target_seq: int, user: str | None = None, reason: str | None = None) -> types.CommitResponse:
+        body: types.RevertRequest = types.RevertRequest(target_seq=target_seq, user=user, reason=reason)
+        response: httpx.Response = self._client.post(
+            f"{self._base}/transactions/revert", json=body.model_dump(), headers=self._headers()
+        )
+        self._raise_for_status(response)
+        result: types.CommitResponse = types.CommitResponse.model_validate_json(response.text)
+        return result
+
+    # ------------------------------------------------------------------------------------------------------------------
     def get_transaction_status(self, txn_uuid: types.TxnUuid) -> types.TransactionStatus:
         # tells a caller whether a transaction is still open or already committed — the way to learn the outcome
         # of a commit whose response was lost (retrying commit() itself is also safe: it's idempotent)

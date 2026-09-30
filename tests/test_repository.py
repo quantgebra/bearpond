@@ -168,3 +168,70 @@ def test_multiple_repos_share_one_object_store(repo_root: Path, monkeypatch: pyt
     assert first_location.read_bytes() == shared_content
 
     server_module.close()
+
+
+OTHER_PATH = "year=2024/month=02/other.parquet"
+OTHER_CONTENT = b"other fake parquet bytes"
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_revert_restores_a_removed_file(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})  # seq 1
+    conftest.remove_files(repo, {HIVE_PATH: CONTENT})  # seq 2
+
+    result: types.CommitResponse = repo.revert(1, reason="bring it back")
+
+    assert result.seq == 3
+    manifest: types.Manifest = repo.metadata_store.get_manifest(3)
+    assert [f.path for f in manifest.files] == [HIVE_PATH]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_revert_undoes_an_update(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})  # seq 1
+    manifest: types.TransactionManifest = types.TransactionManifest(
+        updated=[
+            types.UpdatedFileMetadata(
+                path=HIVE_PATH,
+                old_sha256=conftest.sha256_hex(CONTENT),
+                old_size=len(CONTENT),
+                new_sha256=conftest.sha256_hex(OTHER_CONTENT),
+                new_size=len(OTHER_CONTENT),
+            )
+        ]
+    )
+    txn: transaction.Transaction = repo.begin_transaction(manifest)
+    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, OTHER_CONTENT)
+    repo.commit(txn.txn_uuid)  # seq 2
+
+    result: types.CommitResponse = repo.revert(1)
+
+    assert result.seq == 3
+    reverted: types.FileMetadata | None = repo.metadata_store.get_file_metadata(HIVE_PATH)
+    assert reverted is not None and reverted.sha256 == conftest.sha256_hex(CONTENT)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_revert_to_current_seq_raises(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})
+    with pytest.raises(transaction.TransactionValidationError, match="at least one file"):
+        repo.revert(1)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_revert_to_invalid_seq_raises(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})
+    with pytest.raises(transaction.TransactionValidationError, match="no such manifest version"):
+        repo.revert(99)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_revert_creates_a_new_commit_chained_to_head(repo: repository.Repository) -> None:
+    conftest.commit_files(repo, {HIVE_PATH: CONTENT})  # seq 1
+    conftest.commit_files(repo, {OTHER_PATH: OTHER_CONTENT})  # seq 2
+
+    repo.revert(1)  # seq 3: drops OTHER_PATH
+
+    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    assert len(records) == 3
+    assert records[2].parent_commit_hash == records[1].commit_hash

@@ -489,6 +489,27 @@ def test_cli_pull_with_seq(
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_cli_revert(
+    client: server_client.ServerClient,
+    source_dir: Path,
+    live_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit_file(client, source_dir, PATH_A)
+    commit_file(client, source_dir, PATH_B)
+
+    workdir: Path = tmp_path / "ws"
+    bearpond_client.BearpondClient.clone(live_server, conftest.REPO_NAME, workdir)
+
+    monkeypatch.chdir(workdir)
+    cli.cmd_revert(argparse.Namespace(token=None, seq=1, message="rollback"))
+
+    manifest: types.Manifest = client.get_manifest()
+    assert [f.path for f in manifest.files] == [PATH_A]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_add_on_tracked_file_stages_update(
     client: server_client.ServerClient, source_dir: Path, tmp_path: Path
 ) -> None:

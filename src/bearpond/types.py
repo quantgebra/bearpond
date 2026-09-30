@@ -121,3 +121,10 @@ class CreateRepositoryRequest(BaseModel):
 # ======================================================================================================================
 class RepositoryInfo(BaseModel):
     name: str
+
+
+# ======================================================================================================================
+class RevertRequest(BaseModel):
+    target_seq: int
+    user: str | None = None
+    reason: str | None = None

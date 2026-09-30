@@ -103,6 +103,14 @@ bearpond commit -m "january trades"     # begin + upload + commit as one short t
 bearpond log --limit 10                 # commit history: hash, seq, author, message
 ```
 
+**Revert to a prior version.** `revert` records a brand-new commit whose content matches an earlier manifest version — like `git revert`, not `git reset`: every commit in between stays in the history untouched, nothing is rewritten or deleted. No file bytes move over the wire — content is content-addressed, so the server already has everything it needs:
+
+```bash
+bearpond revert --seq 42 -m "rolling back a bad ingest"
+# creates a new commit that restores the lake to how it looked at manifest-00000042;
+# run `bearpond pull` afterward to update your local workspace to the new commit
+```
+
 **Pull the latest:**
 
 ```bash
@@ -255,6 +263,7 @@ npm run build           # outputs to src/bearpond/server/static/
 - **Pluggable backends** — Postgres metadata store and S3 object store for stateless HA
 - **Point-in-time pull** — `pull --seq N` to mirror the lake as of any version (the store already reconstructs any seq server-side) *(implemented)*
 - **Subset pull** — `pull --query key=value ...` to mirror only files whose path contains the given segments *(implemented)*
+- **Revert** — `revert --seq N` to roll back to a prior version as a new commit, without rewriting history *(implemented)*
 - **Web UI** — React interface for browsing repositories, manifests, and commit history *(scaffolded; admin and user management via the UI is future work)*
 
 ## License

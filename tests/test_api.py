@@ -269,3 +269,32 @@ def test_update_over_http(api: httpx.Client) -> None:
     assert len(files) == 1
     assert files[0]["path"] == HIVE_PATH
     assert files[0]["sha256"] == conftest.sha256_hex(OTHER_CONTENT)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_revert_over_http(api: httpx.Client) -> None:
+    commit_via_api(api, HIVE_PATH, CONTENT)  # seq 1
+    remove: httpx.Response = api.post(
+        f"/repos/{conftest.REPO_NAME}/transactions",
+        json={"added": [], "removed": [conftest.file_meta(HIVE_PATH, CONTENT).model_dump()]},
+    )
+    assert remove.status_code == 200, remove.text
+    txn_uuid: types.TxnUuid = remove.json()["txn_uuid"]
+    commit: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit")
+    assert commit.status_code == 200, commit.text  # seq 2
+
+    response: httpx.Response = api.post(
+        f"/repos/{conftest.REPO_NAME}/transactions/revert", json={"target_seq": 1, "reason": "bring it back"}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"seq": 3, "files_added_count": 1, "files_removed_count": 0, "files_updated_count": 0}
+
+    manifest: httpx.Response = api.get(f"/repos/{conftest.REPO_NAME}/manifest")
+    assert [f["path"] for f in manifest.json()["files"]] == [HIVE_PATH]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_revert_to_invalid_seq_is_400(api: httpx.Client) -> None:
+    commit_via_api(api, HIVE_PATH, CONTENT)
+    response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/revert", json={"target_seq": 99})
+    assert response.status_code == 400

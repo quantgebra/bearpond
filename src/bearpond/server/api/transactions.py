@@ -85,3 +85,14 @@ def abort_transaction(
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> None:
     server.get_repository(repo_name).abort(txn_uuid)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+@router.post("/revert")
+def revert(
+    repo_name: str,
+    request: types.RevertRequest,
+    server: server_module.Server = Depends(dependencies.get_server),
+) -> types.CommitResponse:
+    repo: repository.Repository = server.get_repository(repo_name)
+    return repo.revert(request.target_seq, user=request.user, reason=request.reason)

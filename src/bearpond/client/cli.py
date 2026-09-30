@@ -126,6 +126,14 @@ def cmd_log(args: argparse.Namespace) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def cmd_revert(args: argparse.Namespace) -> None:
+    client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
+    with client.connect(token=args.token) as server:
+        result: types.CommitResponse = server.revert(args.seq, reason=args.message)
+    print(f"Reverted to manifest-{args.seq:08d}: new manifest-{result.seq:08d}")
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def main() -> None:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(description="Bearpond client CLI")
     subparsers: argparse._SubParsersAction = parser.add_subparsers(dest="command", required=True)
@@ -200,6 +208,14 @@ def main() -> None:
     log_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
     log_parser.add_argument("--limit", type=int, default=20, help="Maximum number of commits to show")
     log_parser.set_defaults(func=cmd_log)
+
+    revert_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "revert", help="Revert the lake to a prior manifest version, recorded as a new commit"
+    )
+    revert_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
+    revert_parser.add_argument("--seq", type=int, required=True, help="The manifest version to revert to")
+    revert_parser.add_argument("-m", "--message", default=None, help="Commit message recorded on the resulting commit")
+    revert_parser.set_defaults(func=cmd_revert)
 
     args: argparse.Namespace = parser.parse_args()
     try:
