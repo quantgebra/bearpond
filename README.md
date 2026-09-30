@@ -270,4 +270,4 @@ npm run build           # outputs to packages/server/src/bearpond/server/static/
 
 ## License
 
-TBD — see [LICENSE](LICENSE) when added. (Likely MIT; not yet decided.)
+Apache License 2.0 — see [LICENSE](LICENSE).
