@@ -120,7 +120,14 @@ class BearpondClient:
     
     # ------------------------------------------------------------------------------------------------------------------
     @classmethod
-    def clone(cls, server_url: str, repo: str, target: Path, token: str | None = None) -> "BearpondClient":
+    def clone(
+            cls,
+            server_url: str,
+            repo: str,
+            target: Path,
+            token: str | None = None,
+            query: SubsetQuery | None = None,
+    ) -> "BearpondClient":
         # the only way a workspace comes into being: bound to a remote repo from birth, first pull included
         if target.exists() and any(target.iterdir()):
             raise server_client.BearpondError(f"target directory is not empty: {target}")
@@ -133,7 +140,7 @@ class BearpondClient:
                 # check existence explicitly: an empty repo and a nonexistent repo both 404 the manifest
                 if repo not in server.list_repositories():
                     raise server_client.BearpondError(f"no such repository on {server_url}: {repo}")
-                client.pull(server)
+                client.pull(server, query=query)
         except Exception:
             # don't leave a half-born workspace behind — but only ever remove a directory we created
             if created:

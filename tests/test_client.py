@@ -217,6 +217,39 @@ def test_clone_refuses_non_empty_target_and_cleans_up_on_failure(live_server: st
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_clone_with_query_downloads_only_matching_files(
+    client: server_client.ServerClient, source_dir: Path, live_server: str, tmp_path: Path
+) -> None:
+    commit_source_dir(client, source_dir)
+
+    target: Path = tmp_path / "clone-of-testrepo"
+    workspace: bearpond_client.BearpondClient = bearpond_client.BearpondClient.clone(
+        live_server, conftest.REPO_NAME, target, query=bearpond_client.SubsetQuery(groups=[["month=01"]])
+    )
+
+    assert (target / PATH_A).read_bytes() == CONTENT_A
+    assert not (target / PATH_B).exists()
+    status: bearpond_client.WorkspaceStatus = workspace.status()
+    assert status.query.groups == [["month=01"]]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_cli_clone_with_query(
+    client: server_client.ServerClient, source_dir: Path, live_server: str, tmp_path: Path
+) -> None:
+    commit_source_dir(client, source_dir)
+
+    target: Path = tmp_path / "cli-clone"
+    cli.cmd_clone(
+        argparse.Namespace(url=f"{live_server}/{conftest.REPO_NAME}", dir=target, token=None, query=[["month=01"]])
+    )
+
+    assert (target / PATH_A).read_bytes() == CONTENT_A
+    assert not (target / PATH_B).exists()
+    assert bearpond_client.BearpondClient(target).status().query.groups == [["month=01"]]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_cli_repo_create_then_clone(live_server: str, tmp_path: Path) -> None:
     # the full onboarding flow: create a repo on the server, then clone it into a workspace
     cli.cmd_repo_create(argparse.Namespace(url=f"{live_server}/newrepo", token=None))

@@ -40,7 +40,10 @@ def cmd_repo_create(args: argparse.Namespace) -> None:
 def cmd_clone(args: argparse.Namespace) -> None:
     repo_url: RepoUrl = split_repo_url(args.url)
     target: Path = args.dir if args.dir is not None else Path(repo_url.repo)
-    bearpond_client.BearpondClient.clone(repo_url.server, repo_url.repo, target, token=args.token)
+    query: bearpond_client.SubsetQuery | None = None
+    if args.query is not None:
+        query = bearpond_client.SubsetQuery(groups=args.query)
+    bearpond_client.BearpondClient.clone(repo_url.server, repo_url.repo, target, token=args.token, query=query)
     print(f"Cloned {args.url} into {target}")
 
 
@@ -140,6 +143,14 @@ def main() -> None:
     clone_parser.add_argument("url", help="<server-url>/<repo-name>, e.g. http://localhost:8000/trades")
     clone_parser.add_argument("dir", type=Path, nargs="?", default=None, help="Target directory (default: the repo name)")
     clone_parser.add_argument("--token", default=os.environ.get(TOKEN_ENV_VAR), help=f"Bearer auth token (default: ${TOKEN_ENV_VAR})")
+    clone_parser.add_argument(
+        "--query",
+        nargs="*",
+        action="append",
+        default=None,
+        help="Clone only files whose path contains these segments (AND within one --query, OR across repeats: "
+             "--query year=2024 month=01 --query year=2025 month=02); omit --query for a full mirror (the default)",
+    )
     clone_parser.set_defaults(func=cmd_clone)
 
     add_parser: argparse.ArgumentParser = subparsers.add_parser(

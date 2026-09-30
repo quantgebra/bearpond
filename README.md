@@ -60,7 +60,8 @@ Three rules keep the model honest: a path can only be added if it does not alrea
 Requires Python 3.11+.
 
 ```bash
-pip install bearpond   # or: pip install -e . from a clone
+pip install bearpond            # client only — clone, add, commit, pull (or: pip install -e . from a clone)
+pip install bearpond[server]    # + FastAPI/uvicorn/PyYAML — needed to run the server itself
 ```
 
 **Run the server.** Create a config directory with a `server.yaml` pointing at the server's two storage locations — one server hosts many repositories, all sharing one metadata database and one object store:
@@ -84,6 +85,10 @@ On Windows, set the variable with `set BEARPOND_CONFIG_DIR=C:\path\to\config` (c
 bearpond repo-create http://localhost:8000/trades
 bearpond clone http://localhost:8000/trades ./trades
 cd trades
+
+# clone straight into a filtered view instead of cloning full and then pulling with a query —
+# clone accepts the same --query syntax as pull (see "Pull a subset (a filtered view)" below)
+bearpond clone http://localhost:8000/trades ./trades-2024-01 --query month=01
 ```
 
 **Commit files.** Like git, staging is local and the server interaction is one short, atomic action — `add` records file metadata in the staging area (`.bearpond/staged.json`), and `commit` begins a transaction, uploads everything staged, and commits in one go. All run from inside the cloned workspace:
