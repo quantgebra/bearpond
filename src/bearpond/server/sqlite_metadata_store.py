@@ -257,12 +257,14 @@ class SqliteMetadataStore(metadata_store.MetadataStore):
                     # ensure the repo is registered before committing — idempotent insert
                     self._conn.execute("INSERT OR IGNORE INTO repos (name) VALUES (?)", (repo,))
 
-                    current: dict[str, types.FileMetadata] = {
-                        row[0]: types.FileMetadata(path=row[0], sha256=row[1], size=row[2])
-                        for row in self._conn.execute(
-                            "SELECT path, sha256, size FROM objects WHERE repo = ? AND removed_seq IS NULL", (repo,)
-                        ).fetchall()
-                    }
+                    # create map of current repo contents
+                    rows: list[tuple] = self._conn.execute(
+                        "SELECT path, sha256, size FROM objects WHERE repo = ? AND removed_seq IS NULL", (repo,)
+                    ).fetchall()
+                    current_path_2_metadata: dict[str, types.FileMetadata] = {}
+                    for row in rows:
+                        file_metadata: types.FileMetadata = types.FileMetadata(path=row[0], sha256=row[1], size=row[2])
+                        current_path_2_metadata[file_metadata.path] = file_metadata
 
                     # a path can only be in one of added, removed, or updated within a single commit
                     added_paths: set[str] = {f.path for f in txn.added}
@@ -278,8 +280,8 @@ class SqliteMetadataStore(metadata_store.MetadataStore):
                     # an added path must not be live at all — different content requires a remove first, identical
                     # content is a no-op, and both are rejected: every recorded commit changes the lake by construction
                     for added_file in txn.added:
-                        if added_file.path in current:
-                            if current[added_file.path].sha256 != added_file.sha256:
+                        if added_file.path in current_path_2_metadata:
+                            if current_path_2_metadata[added_file.path].sha256 != added_file.sha256:
                                 raise metadata_store.MetadataConflictError(
                                     f"{added_file.path} already exists in the lake with different content — "
                                     f"remove it before adding new content"
@@ -291,9 +293,9 @@ class SqliteMetadataStore(metadata_store.MetadataStore):
 
                     # a removal is only safe against the exact content the client observed when it decided to remove
                     for removed_file in txn.removed:
-                        if removed_file.path not in current:
+                        if removed_file.path not in current_path_2_metadata:
                             raise metadata_store.MetadataConflictError(f"path to remove no longer exists: {removed_file.path}")
-                        if current[removed_file.path].sha256 != removed_file.sha256:
+                        if current_path_2_metadata[removed_file.path].sha256 != removed_file.sha256:
                             raise metadata_store.MetadataConflictError(
                                 f"{removed_file.path} has changed since it was declared for removal — "
                                 f"remove is only safe against the exact content that was observed"
@@ -302,9 +304,9 @@ class SqliteMetadataStore(metadata_store.MetadataStore):
                     # an update is only safe against the exact content the client observed, and the new content must
                     # actually be different — otherwise the commit would be a no-op
                     for updated_file in txn.updated:
-                        if updated_file.path not in current:
+                        if updated_file.path not in current_path_2_metadata:
                             raise metadata_store.MetadataConflictError(f"path to update no longer exists: {updated_file.path}")
-                        if current[updated_file.path].sha256 != updated_file.old_sha256:
+                        if current_path_2_metadata[updated_file.path].sha256 != updated_file.old_sha256:
                             raise metadata_store.MetadataConflictError(
                                 f"{updated_file.path} has changed since it was declared for update — "
                                 f"update is only safe against the exact content that was observed"
