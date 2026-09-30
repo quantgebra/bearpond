@@ -60,9 +60,11 @@ Three rules keep the model honest: a path can only be added if it does not alrea
 Requires Python 3.11+.
 
 ```bash
-pip install bearpond            # client only — clone, add, commit, pull (or: pip install -e . from a clone)
-pip install bearpond[server]    # + FastAPI/uvicorn/PyYAML — needed to run the server itself
+pip install bearpond            # client only — clone, add, commit, pull, revert
+pip install bearpond-server     # the server — FastAPI/uvicorn/PyYAML, a separate distribution
 ```
+
+`bearpond` and `bearpond-server` are independent PyPI packages, sharing only `bearpond-protocol` (the wire-format types) — installing the client never pulls down any server source code.
 
 **Run the server.** Create a config directory with a `server.yaml` pointing at the server's two storage locations — one server hosts many repositories, all sharing one metadata database and one object store:
 
@@ -167,7 +169,7 @@ npm install
 npm run build
 ```
 
-The build output lands in `src/bearpond/server/static/`, which FastAPI serves. Then start the server normally:
+The build output lands in `packages/server/src/bearpond/server/static/`, which FastAPI serves. Then start the server normally:
 
 ```bash
 export BEARPOND_CONFIG_DIR=/path/to/config
@@ -224,19 +226,19 @@ A commit is *content before pointers*: files are streamed directly to the conten
 Layout of this repo:
 
 ```
-src/bearpond/
-  types.py            # the wire protocol shared by server and client
-  server/             # FastAPI app, repository, transaction, metadata store, object store, static UI files
-  client/             # workspace client + CLI (add/rm/commit/pull/status)
+packages/
+  protocol/src/bearpond/types.py   # the wire protocol shared by server and client (bearpond-protocol on PyPI)
+  server/src/bearpond/server/      # FastAPI app, repository, transaction, metadata store, object store, static UI files (bearpond-server)
+  client/src/bearpond/client/      # workspace client + CLI (add/rm/commit/pull/revert/status) (bearpond)
 web/                  # React + TypeScript web UI source (Vite)
-tests/                # pytest suite (domain, API, client end-to-end)
+tests/                # pytest suite (domain, API, client end-to-end) — spans all three packages
 ```
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-python -m pytest        # 115 tests: domain, API over live HTTP, end-to-end client flows
+pip install -e packages/protocol -e packages/server -e "packages/client[dev]"
+python -m pytest        # 128 tests: domain, API over live HTTP, end-to-end client flows
 ```
 
 The web UI lives in `web/` and uses Vite + React + TypeScript. To work on it:
@@ -251,7 +253,7 @@ Build it before packaging or testing the served version:
 
 ```bash
 cd web
-npm run build           # outputs to src/bearpond/server/static/
+npm run build           # outputs to packages/server/src/bearpond/server/static/
 ```
 
 ## Roadmap

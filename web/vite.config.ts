@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   build: {
     // Ship the production build inside the Python package so FastAPI can serve it.
-    outDir: '../src/bearpond/server/static',
+    outDir: '../packages/server/src/bearpond/server/static',
     emptyOutDir: true,
   },
   server: {

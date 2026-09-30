@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bearpond"
+version = "0.1.0"
+description = "Simple transactional data sync client"
+requires-python = ">=3.11"
+dependencies = [
+    "bearpond-protocol",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "bearpond-server",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+bearpond = "bearpond.client.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
