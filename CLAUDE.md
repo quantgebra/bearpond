@@ -1,1 +1,0 @@
-/Users/mbz/.agents/AGENTS.py.md
