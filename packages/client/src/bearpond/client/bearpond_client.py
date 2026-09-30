@@ -7,7 +7,7 @@ from typing import NamedTuple, Optional
 
 from pydantic import BaseModel
 
-from .. import types
+from bearpond.protocol import types
 from . import server_client
 
 STATE_DIR_NAME = ".bearpond"

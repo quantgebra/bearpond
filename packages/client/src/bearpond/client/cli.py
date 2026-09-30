@@ -4,7 +4,8 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-from .. import types
+from bearpond.protocol import types
+
 from . import bearpond_client
 from . import server_client
 

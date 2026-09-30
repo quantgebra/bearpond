@@ -3,7 +3,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.status import HTTP_404_NOT_FOUND
 
-from ... import types
+from bearpond.protocol import types
 from .. import metadata_store
 from .. import repository
 from .. import server as server_module

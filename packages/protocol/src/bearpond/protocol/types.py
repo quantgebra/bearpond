@@ -14,6 +14,11 @@ TxnUuid = NewType("TxnUuid", str)
 # content: the commit's change, not a file's bytes), even though all are hex sha256 strings at runtime
 Sha256 = NewType("Sha256", str)
 
+# bumped only on a genuine breaking change to the wire format below (a field removed, renamed, retyped, or made
+# required) — pure additions (a new optional field with a default) don't bump it. Client and server each report
+# whichever value their own installed bearpond-protocol defines, so a mismatch is detected at connect time.
+PROTOCOL_VERSION: int = 1
+
 
 # ======================================================================================================================
 class FileMetadata(BaseModel):
@@ -128,3 +133,9 @@ class RevertRequest(BaseModel):
     target_seq: int
     user: str | None = None
     reason: str | None = None
+
+
+# ======================================================================================================================
+class VersionInfo(BaseModel):
+    protocol_version: int
+    server_version: str

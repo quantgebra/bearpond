@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import TypeVar
 
-from .. import types
+from bearpond.protocol import types
 from . import metadata_store
 from . import object_store
 from . import repo_metadata_store

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from starlette.status import HTTP_404_NOT_FOUND
 
-from ... import types
+from bearpond.protocol import types
 from .. import repo_metadata_store
 from .. import server as server_module
 from . import dependencies

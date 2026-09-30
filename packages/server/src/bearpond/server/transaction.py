@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from .. import types
+from bearpond.protocol import types
 
 
 # ======================================================================================================================

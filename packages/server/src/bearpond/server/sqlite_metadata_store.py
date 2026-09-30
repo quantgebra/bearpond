@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from .. import types
+from bearpond.protocol import types
 from . import metadata_store
 from . import transaction
 

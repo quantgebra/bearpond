@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 import httpx
 
-from .. import types
+from bearpond.protocol import types
 
 CHUNK_SIZE = 1024 * 1024
 
@@ -86,7 +86,20 @@ class ServerClient:
         self._client.close()
 
     # ------------------------------------------------------------------------------------------------------------------
+    def _check_protocol_version(self) -> None:
+        response: httpx.Response = self._client.get("/version", headers=self._headers())
+        self._raise_for_status(response)
+        info: types.VersionInfo = types.VersionInfo.model_validate_json(response.text)
+        if info.protocol_version != types.PROTOCOL_VERSION:
+            raise BearpondError(
+                f"protocol version mismatch: this client speaks protocol {types.PROTOCOL_VERSION}, "
+                f"server speaks protocol {info.protocol_version} (server version {info.server_version}) — "
+                f"upgrade whichever side is older"
+            )
+
+    # ------------------------------------------------------------------------------------------------------------------
     def __enter__(self) -> "ServerClient":
+        self._check_protocol_version()
         return self
 
     # ------------------------------------------------------------------------------------------------------------------

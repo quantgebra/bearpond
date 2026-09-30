@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import conftest
-from bearpond import types
+from bearpond.protocol import types
 from bearpond.client import bearpond_client
 from bearpond.client import server_client
 from bearpond.client import cli

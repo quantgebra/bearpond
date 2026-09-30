@@ -1,10 +1,11 @@
+import importlib.metadata
 from collections.abc import Iterator
 
 import httpx
 import pytest
 
 import conftest
-from bearpond import types
+from bearpond.protocol import types
 from bearpond.server import repository
 
 HIVE_PATH = "year=2024/month=01/part.parquet"
@@ -298,3 +299,12 @@ def test_revert_to_invalid_seq_is_400(api: httpx.Client) -> None:
     commit_via_api(api, HIVE_PATH, CONTENT)
     response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/revert", json={"target_seq": 99})
     assert response.status_code == 400
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_version_endpoint(api: httpx.Client) -> None:
+    response: httpx.Response = api.get("/version")
+    assert response.status_code == 200, response.text
+    body: dict = response.json()
+    assert body["protocol_version"] == types.PROTOCOL_VERSION
+    assert body["server_version"] == importlib.metadata.version("bearpond-server")

@@ -2,7 +2,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from .. import types
+from bearpond.protocol import types
 
 CHUNK_SIZE = 1024 * 1024
 

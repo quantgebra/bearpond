@@ -3,7 +3,7 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from .. import types
+from bearpond.protocol import types
 from . import utils
 
 

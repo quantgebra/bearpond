@@ -1,5 +1,5 @@
 import conftest
-from bearpond import types
+from bearpond.protocol import types
 from bearpond.server import metadata_store
 from bearpond.server import repo_metadata_store
 from bearpond.server import repository

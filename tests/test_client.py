@@ -3,10 +3,11 @@ import json
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 
 import conftest
-from bearpond import types
+from bearpond.protocol import types
 from bearpond.client import bearpond_client
 from bearpond.client import cli
 from bearpond.client import server_client
@@ -507,6 +508,20 @@ def test_cli_revert(
 
     manifest: types.Manifest = client.get_manifest()
     assert [f.path for f in manifest.files] == [PATH_A]
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_connect_rejects_mismatched_protocol_version() -> None:
+    # a fabricated /version response lets this test isolate the client-side check, rather than relying on the
+    # live_server fixture — that server runs in-process (a background thread), sharing bearpond.protocol.types with
+    # the test itself, so patching PROTOCOL_VERSION there would shift the server's own reported value too
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"protocol_version": 999, "server_version": "9.9.9"})
+
+    transport: httpx.MockTransport = httpx.MockTransport(handler)
+    with pytest.raises(server_client.BearpondError, match="protocol version mismatch"):
+        with server_client.ServerClient("http://test", conftest.REPO_NAME, transport=transport) as _:
+            pass
 
 
 # ----------------------------------------------------------------------------------------------------------------------

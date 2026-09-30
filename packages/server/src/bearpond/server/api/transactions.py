@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Request
 
-from ... import types
+from bearpond.protocol import types
 from .. import repository
 from .. import server as server_module
 from .. import transaction
