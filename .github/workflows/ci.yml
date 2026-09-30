@@ -14,6 +14,7 @@ permissions:
 
 jobs:
   test:
+    needs: [web]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -28,6 +29,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: packages/*/pyproject.toml
+
+      # test_ui.py serves the production web build, which is gitignored and so absent from a fresh checkout
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-static
+          path: packages/server/src/bearpond/server/static
 
       # the packages depend on each other and only bearpond-protocol is needed by both sides, so install all three together
       - name: Install packages
