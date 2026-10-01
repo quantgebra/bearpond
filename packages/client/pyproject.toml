@@ -27,3 +27,6 @@ bearpond = "bearpond.client.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = true
+
+[tool.setuptools.package-data]
+bearpond = ["client/py.typed"]

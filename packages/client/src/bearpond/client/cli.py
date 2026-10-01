@@ -75,12 +75,12 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(f"Workspace at manifest-{status.workspace_seq:08d} — {query_label}")
     for path in status.pending:
         print(f"  pending pull:  {path}")
-    for path in status.staged_added:
-        print(f"  staged add:    {path.path}")
-    for path in status.staged_removed:
-        print(f"  staged remove: {path.path}")
-    for path in status.staged_updated:
-        print(f"  staged update: {path.path}")
+    for added_file in status.staged_added:
+        print(f"  staged add:    {added_file.path}")
+    for removed_file in status.staged_removed:
+        print(f"  staged remove: {removed_file.path}")
+    for updated_file in status.staged_updated:
+        print(f"  staged update: {updated_file.path}")
     for path in status.modified:
         print(f"  modified:      {path}")
     for path in status.untracked:

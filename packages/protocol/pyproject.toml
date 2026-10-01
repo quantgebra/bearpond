@@ -15,3 +15,6 @@ dependencies = ["pydantic>=2.6"]
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = true
+
+[tool.setuptools.package-data]
+bearpond = ["protocol/py.typed"]

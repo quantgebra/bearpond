@@ -629,9 +629,9 @@ class BearpondClient:
             
             # delete files that were pulled under the previous view but are outside the new one
             for rel_path in to_delete:
-                dest_path: Path = self.workdir / rel_path
-                dest_path.unlink(missing_ok=True)
-                prune_empty_dirs(self.workdir, dest_path)
+                pruned_path: Path = self.workdir / rel_path
+                pruned_path.unlink(missing_ok=True)
+                prune_empty_dirs(self.workdir, pruned_path)
                 print(f"  pruned: {rel_path}")
             
             # we've updated to the new manifest and target view, so make all three official

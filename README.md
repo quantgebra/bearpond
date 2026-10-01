@@ -114,7 +114,7 @@ tests/                # pytest suite (domain, API, client end-to-end) — spans 
 ## Development
 
 ```bash
-pip install -e packages/protocol -e packages/server -e "packages/client[dev]"
+pip install -e packages/protocol -e "packages/server[dev]" -e "packages/client[dev]"
 python -m pytest        # 130 tests: domain, API over live HTTP, end-to-end client flows
 ```
 

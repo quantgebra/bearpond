@@ -35,7 +35,8 @@ async def upload_file(
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> types.FileMetadata:
     repo: repository.Repository = server.get_repository(repo_name)
-    return await repo.upload_file(txn_uuid, rel_path, request.stream())
+    txn: transaction.Transaction = _require_open_transaction(repo, txn_uuid)
+    return await repo.upload_file(txn, rel_path, request.stream())
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -46,21 +47,20 @@ def get_transaction_status(
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> types.TransactionStatus:
     repo: repository.Repository = server.get_repository(repo_name)
+    txn: transaction.Transaction | None = repo.get_transaction(txn_uuid)
     result: types.TransactionStatus
-    try:
-        txn: transaction.Transaction = repo.get_transaction(txn_uuid)
-        result = types.TransactionStatus(
-            txn_uuid=txn.txn_uuid, status="open", seq=None, created_at=txn.created_at
-        )
-    except transaction.TransactionNotFoundError:
+    if txn is not None:
+        result = types.TransactionStatus(txn_uuid=txn.txn_uuid, status="open", seq=None, created_at=txn.created_at)
+    else:
         # no transaction state in the store — the transaction either never existed (or was aborted), or already
         # committed; the commit record tells the two apart
         record: types.CommitRecord | None = repo.metadata_store.get_commit_record_by_txn_uuid(txn_uuid)
-        if record is None:
-            raise
-        result = types.TransactionStatus(
-            txn_uuid=record.txn_uuid, status="committed", seq=record.seq, created_at=record.created_at
-        )
+        if record is not None:
+            result = types.TransactionStatus(
+                txn_uuid=record.txn_uuid, status="committed", seq=record.seq, created_at=record.created_at
+            )
+        else:
+            raise transaction.TransactionNotFoundError(f"unknown transaction: {txn_uuid}")
     return result
 
 
@@ -71,10 +71,21 @@ def commit_transaction(
     txn_uuid: types.TxnUuid,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> types.CommitResponse:
+    result: types.CommitResponse | None
     repo: repository.Repository = server.get_repository(repo_name)
-    # user and reason were declared at begin time; Repository.commit answers a retry from the commit record when
-    # the transaction state is already gone
-    return repo.commit(txn_uuid)
+    txn: transaction.Transaction | None = repo.get_transaction(txn_uuid)
+    if txn is not None:
+        # user and reason were declared at begin time
+        result = repo.commit(txn)
+    else:
+        # no open transaction — this may be a retry of a commit that already finished, so answer from its record
+        result = repo.get_commit_response(txn_uuid)
+        if result is None:
+            raise transaction.TransactionNotFoundError(f"unknown transaction: {txn_uuid}")
+        
+    # result can not be None since we raise an Error if it's None
+    assert result is not None
+    return result
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -84,7 +95,9 @@ def abort_transaction(
     txn_uuid: types.TxnUuid,
     server: server_module.Server = Depends(dependencies.get_server),
 ) -> None:
-    server.get_repository(repo_name).abort(txn_uuid)
+    repo: repository.Repository = server.get_repository(repo_name)
+    txn: transaction.Transaction = _require_open_transaction(repo, txn_uuid)
+    repo.abort(txn)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -96,3 +109,12 @@ def revert(
 ) -> types.CommitResponse:
     repo: repository.Repository = server.get_repository(repo_name)
     return repo.revert(request.target_seq, user=request.user, reason=request.reason)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def _require_open_transaction(repo: repository.Repository, txn_uuid: types.TxnUuid) -> transaction.Transaction:
+    # upload and abort cannot do anything without an open transaction, so an unknown id is a 404 here
+    result: transaction.Transaction | None = repo.get_transaction(txn_uuid)
+    if result is None:
+        raise transaction.TransactionNotFoundError(f"unknown transaction: {txn_uuid}")
+    return result

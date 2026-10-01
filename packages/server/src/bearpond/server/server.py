@@ -1,6 +1,5 @@
 import re
 from pathlib import Path
-from typing import Optional
 
 from . import config
 from . import metadata_store
@@ -20,7 +19,7 @@ class Server:
     
     # ------------------------------------------------------------------------------------------------------------------
     def __init__(self, server_config: config.ServerConfig) -> None:
-        # we don't really ever use the config, but save it anyhow
+        # we don't really ever use the config, but save for now
         self.config: config.ServerConfig = server_config
         
         # create the MetadataStore
@@ -31,11 +30,12 @@ class Server:
         # create the ObjectStore
         self.object_store: object_store.ObjectStore = object_store.ObjectStore(server_config.object_store_root)
         
-        # a name_2_repo map
-        self._name_2_repo: dict[str, repository.Repository] = {}
+        # a name_2_repo cache
+        self._name_2_repo_cache: dict[str, repository.Repository] = {}
     
     # ------------------------------------------------------------------------------------------------------------------
     def _get_repo_metadata_store(self, name: str) -> repo_metadata_store.RepoMetadataStore:
+        # returns a wrapper around the MetadataStore that is repo specific
         return repo_metadata_store.RepoMetadataStore(name, self.metadata_store)
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -44,25 +44,19 @@ class Server:
         if not self._REPO_NAME.match(name):
             raise repository.RepositoryNotFoundError(f"invalid repository name: {name}")
         
-        # first try to get it from the cache
-        result: Optional[repository.Repository] = self._name_2_repo.get(name)
-        
-        if result is None:
-            # we don't have the repo in the cache, let's try to create it
-            if name in self.metadata_store.list_repos():
-                # instantiate the existing repo and add it to the cache
-                self._name_2_repo[name] = repository.Repository(
-                    name, self._get_repo_metadata_store(name), self.object_store
-                )
-                
-                # get the result from the cache
-                result = self._name_2_repo[name]
-            else:
-                # the caller is trying to get a repo that does not exist
-                raise repository.RepositoryNotFoundError(f"unknown repository: {name}")
-        
-        # by this point every path above has populated result — tell the type checker so
-        assert result is not None
+        result: repository.Repository
+        if name in self._name_2_repo_cache:
+            # the repo is already cached
+            result = self._name_2_repo_cache[name]
+        elif name in self.metadata_store.list_repos():
+            # we don't have the repo in the cache, so instantiate the existing repo and cache it
+            result = repository.Repository(name, self._get_repo_metadata_store(name), self.object_store)
+            # add it to the cache
+            self._name_2_repo_cache[name] = result
+        else:
+            # the caller is trying to get a repo that does not exist
+            raise repository.RepositoryNotFoundError(f"unknown repository: {name}")
+
         return result
     
     # ------------------------------------------------------------------------------------------------------------------
@@ -77,10 +71,13 @@ class Server:
         
         # create the repo, register it with the metadata_store
         self.metadata_store.register_repo(name)
-        self._name_2_repo[name] = repository.Repository(name, self._get_repo_metadata_store(name), self.object_store)
+        # now that the repo is in the metadata_store, instantiate it
+        result = repository.Repository(name, self._get_repo_metadata_store(name), self.object_store)
+        # add it to the cache
+        self._name_2_repo_cache[name] = result
         
         # return
-        return self._name_2_repo[name]
+        return result
     
     # ------------------------------------------------------------------------------------------------------------------
     def list_repositories(self) -> list[str]:
@@ -88,7 +85,7 @@ class Server:
     
     # ------------------------------------------------------------------------------------------------------------------
     def close(self) -> None:
-        self._name_2_repo.clear()
+        self._name_2_repo_cache.clear()
         self.metadata_store.close()
 
 

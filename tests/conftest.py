@@ -39,8 +39,8 @@ def commit_files(repo: repository.Repository, files: dict[str, bytes]) -> types.
         added.append(file_meta(path, content))
     txn: transaction.Transaction = repo.begin_transaction(types.TransactionManifest(added=added))
     for path, content in files.items():
-        upload_bytes(repo, txn.txn_uuid, path, content)
-    return repo.commit(txn.txn_uuid)
+        upload_bytes(repo, txn, path, content)
+    return repo.commit(txn)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -50,7 +50,7 @@ def remove_files(repo: repository.Repository, files: dict[str, bytes]) -> types.
     for path, content in files.items():
         removed.append(file_meta(path, content))
     txn: transaction.Transaction = repo.begin_transaction(types.TransactionManifest(removed=removed))
-    return repo.commit(txn.txn_uuid)
+    return repo.commit(txn)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -72,9 +72,9 @@ async def one_chunk_stream(data: bytes) -> AsyncIterator[bytes]:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def upload_bytes(repo: repository.Repository, txn_uuid: types.TxnUuid, rel_path: str, data: bytes) -> types.FileMetadata:
+def upload_bytes(repo: repository.Repository, txn: transaction.Transaction, rel_path: str, data: bytes) -> types.FileMetadata:
     # Repository.upload_file is async (it streams the request body); tests drive it synchronously
-    return asyncio.run(repo.upload_file(txn_uuid, rel_path, one_chunk_stream(data)))
+    return asyncio.run(repo.upload_file(txn, rel_path, one_chunk_stream(data)))
 
 
 # ----------------------------------------------------------------------------------------------------------------------

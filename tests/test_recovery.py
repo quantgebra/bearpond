@@ -17,7 +17,7 @@ def begin_uploaded_txn(repo: repository.Repository, files: dict[str, bytes]) -> 
         added.append(conftest.file_meta(path, content))
     txn: transaction.Transaction = repo.begin_transaction(types.TransactionManifest(added=added))
     for path, content in files.items():
-        conftest.upload_bytes(repo, txn.txn_uuid, path, content)
+        conftest.upload_bytes(repo, txn, path, content)
     return txn
 
 
@@ -39,7 +39,7 @@ def test_orphaned_object_is_harmless(repo: repository.Repository) -> None:
     # an upload followed by an abort leaves the object in the store unreferenced — a future GC reclaims it, and
     # the lake simply doesn't know about it in the meantime
     txn: transaction.Transaction = begin_uploaded_txn(repo, {HIVE_PATH: CONTENT})
-    repo.abort(txn.txn_uuid)
+    repo.abort(txn)
 
     assert repo.object_store.contains_address(conftest.sha256_hex(CONTENT))
     assert conftest.current_manifest(repo) is None

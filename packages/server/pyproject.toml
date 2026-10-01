@@ -18,6 +18,11 @@ dependencies = [
     "PyYAML>=6.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "types-PyYAML",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = true

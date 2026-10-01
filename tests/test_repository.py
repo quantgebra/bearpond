@@ -106,14 +106,28 @@ def test_begin_creates_transaction_state(repo: repository.Repository) -> None:
     assert txn.added[0].sha256 == meta.sha256
 
     # the same transaction is reachable by id afterwards, with the same state
-    fetched: transaction.Transaction = repo.get_transaction(txn.txn_uuid)
+    fetched: transaction.Transaction | None = repo.get_transaction(txn.txn_uuid)
+    assert fetched is not None
     assert [f.path for f in fetched.added] == [f.path for f in txn.added]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_get_transaction_unknown_id_raises(repo: repository.Repository) -> None:
-    with pytest.raises(transaction.TransactionNotFoundError):
-        repo.get_transaction(types.TxnUuid("no-such-transaction"))
+def test_get_transaction_unknown_id_returns_none(repo: repository.Repository) -> None:
+    assert repo.get_transaction(types.TxnUuid("no-such-transaction")) is None
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_get_commit_response_answers_from_the_commit_record(repo: repository.Repository) -> None:
+    txn: transaction.Transaction = begin(repo, added=[conftest.file_meta(HIVE_PATH, b"x")])
+    conftest.upload_bytes(repo, txn, HIVE_PATH, b"x")
+
+    # nothing has committed yet, so there is no commit record to answer from
+    assert repo.get_commit_response(txn.txn_uuid) is None
+
+    # once committed the transaction state is gone, but a retry is still answered from the record
+    committed: types.CommitResponse = repo.commit(txn)
+    assert repo.get_transaction(txn.txn_uuid) is None
+    assert repo.get_commit_response(txn.txn_uuid) == committed
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -201,8 +215,8 @@ def test_revert_undoes_an_update(repo: repository.Repository) -> None:
         ]
     )
     txn: transaction.Transaction = repo.begin_transaction(manifest)
-    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, OTHER_CONTENT)
-    repo.commit(txn.txn_uuid)  # seq 2
+    conftest.upload_bytes(repo, txn, HIVE_PATH, OTHER_CONTENT)
+    repo.commit(txn)  # seq 2
 
     result: types.CommitResponse = repo.revert(1)
 

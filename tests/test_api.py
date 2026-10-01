@@ -51,6 +51,13 @@ def test_begin_with_empty_manifest_is_400(api: httpx.Client) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_upload_and_abort_unknown_transaction_are_404(api: httpx.Client) -> None:
+    base: str = f"/repos/{conftest.REPO_NAME}/transactions/no-such-txn"
+    assert api.put(f"{base}/files/{HIVE_PATH}", content=CONTENT).status_code == 404
+    assert api.delete(base).status_code == 404
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_commit_unknown_transaction_is_404(api: httpx.Client) -> None:
     assert api.post(f"/repos/{conftest.REPO_NAME}/transactions/no-such-txn/commit").status_code == 404
 

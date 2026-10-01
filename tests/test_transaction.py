@@ -23,24 +23,26 @@ def begin_add(repo: repository.Repository, rel_path: str, content: bytes) -> tra
 # ----------------------------------------------------------------------------------------------------------------------
 def add_and_commit(repo: repository.Repository, rel_path: str, content: bytes) -> types.CommitResponse:
     txn: transaction.Transaction = begin_add(repo, rel_path, content)
-    conftest.upload_bytes(repo, txn.txn_uuid, rel_path, content)
-    return repo.commit(txn.txn_uuid)
+    conftest.upload_bytes(repo, txn, rel_path, content)
+    return repo.commit(txn)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_upload_rejects_undeclared_path(repo: repository.Repository) -> None:
     txn: transaction.Transaction = begin_add(repo, HIVE_PATH, CONTENT)
     with pytest.raises(transaction.TransactionValidationError, match="not declared"):
-        conftest.upload_bytes(repo, txn.txn_uuid, "year=2024/sneaky.parquet", CONTENT)
+        conftest.upload_bytes(repo, txn, "year=2024/sneaky.parquet", CONTENT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_upload_rejects_sha_mismatch_and_leaves_nothing_behind(repo: repository.Repository) -> None:
     txn: transaction.Transaction = begin_add(repo, HIVE_PATH, CONTENT)
     with pytest.raises(transaction.TransactionValidationError, match="sha256 mismatch"):
-        conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, b"not the declared content")
+        conftest.upload_bytes(repo, txn, HIVE_PATH, b"not the declared content")
 
-    assert repo.get_transaction(txn.txn_uuid).uploaded == []
+    stored: transaction.Transaction | None = repo.get_transaction(txn.txn_uuid)
+    assert stored is not None
+    assert stored.uploaded == []
     # the object was never placed in the content-addressed store because the stream did not match
     assert not repo.object_store.contains_address(conftest.sha256_hex(b"not the declared content"))
 
@@ -51,17 +53,17 @@ def test_commit_rejects_missing_uploads(repo: repository.Repository) -> None:
         added=[conftest.file_meta(HIVE_PATH, CONTENT), conftest.file_meta(OTHER_PATH, OTHER_CONTENT)]
     )
     txn: transaction.Transaction = repo.begin_transaction(manifest)
-    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, CONTENT)
+    conftest.upload_bytes(repo, txn, HIVE_PATH, CONTENT)
 
     with pytest.raises(transaction.TransactionValidationError, match="not yet uploaded"):
-        repo.commit(txn.txn_uuid)
+        repo.commit(txn)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_commit_lands_object_manifest_and_record(repo: repository.Repository) -> None:
     txn: transaction.Transaction = begin_add(repo, HIVE_PATH, CONTENT)
-    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, CONTENT)
-    result: types.CommitResponse = repo.commit(txn.txn_uuid)
+    conftest.upload_bytes(repo, txn, HIVE_PATH, CONTENT)
+    result: types.CommitResponse = repo.commit(txn)
 
     assert result.seq == 1
     assert result.files_added_count == 1
@@ -104,11 +106,11 @@ def test_commit_bumps_seq_once_per_change(repo: repository.Repository) -> None:
 def test_commit_conflicts_when_path_landed_elsewhere_since_begin(repo: repository.Repository) -> None:
     # the path was free at begin time, but another commit has since landed different content there
     txn: transaction.Transaction = begin_add(repo, HIVE_PATH, CONTENT)
-    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, CONTENT)
+    conftest.upload_bytes(repo, txn, HIVE_PATH, CONTENT)
     conftest.commit_files(repo, {HIVE_PATH: OTHER_CONTENT})
 
     with pytest.raises(transaction.TransactionConflictError, match="different content"):
-        repo.commit(txn.txn_uuid)
+        repo.commit(txn)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -121,7 +123,7 @@ def test_commit_conflicts_when_removal_target_vanished_since_begin(repo: reposit
     conftest.remove_files(repo, {HIVE_PATH: CONTENT})
 
     with pytest.raises(transaction.TransactionConflictError, match="no longer exists"):
-        repo.commit(txn.txn_uuid)
+        repo.commit(txn)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -131,7 +133,7 @@ def test_commit_removal_unmaps_path_but_keeps_object(repo: repository.Repository
     txn: transaction.Transaction = repo.begin_transaction(
         types.TransactionManifest(removed=[conftest.file_meta(HIVE_PATH, CONTENT)])
     )
-    result: types.CommitResponse = repo.commit(txn.txn_uuid)
+    result: types.CommitResponse = repo.commit(txn)
 
     assert result.seq == 2
     assert result.files_removed_count == 1
@@ -150,11 +152,11 @@ def test_commit_conflicts_when_identical_content_landed_since_begin(repo: reposi
     # the path was free at begin time, but another commit has since landed the very same content there —
     # committing now would change nothing, so it's rejected as a no-op rather than recorded
     txn: transaction.Transaction = begin_add(repo, HIVE_PATH, CONTENT)
-    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, CONTENT)
+    conftest.upload_bytes(repo, txn, HIVE_PATH, CONTENT)
     conftest.commit_files(repo, {HIVE_PATH: CONTENT})
 
     with pytest.raises(transaction.TransactionConflictError, match="no-op"):
-        repo.commit(txn.txn_uuid)
+        repo.commit(txn)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -178,8 +180,8 @@ def test_readd_after_removal_starts_a_new_lifecycle(repo: repository.Repository)
 # ----------------------------------------------------------------------------------------------------------------------
 def test_abort_clears_transaction_state_but_leaves_orphan_object(repo: repository.Repository) -> None:
     txn: transaction.Transaction = begin_add(repo, HIVE_PATH, CONTENT)
-    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, CONTENT)
-    repo.abort(txn.txn_uuid)
+    conftest.upload_bytes(repo, txn, HIVE_PATH, CONTENT)
+    repo.abort(txn)
     # the transaction state is gone but the object remains in the content-addressed store as an orphan
     assert repo.metadata_store.get_transaction(txn.txn_uuid) is None
     assert repo.object_store.contains_address(conftest.sha256_hex(CONTENT))
@@ -208,8 +210,8 @@ def test_update_replaces_content_at_path(repo: repository.Repository) -> None:
     add_and_commit(repo, HIVE_PATH, CONTENT)
 
     txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, OTHER_CONTENT)
-    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, OTHER_CONTENT)
-    result: types.CommitResponse = repo.commit(txn.txn_uuid)
+    conftest.upload_bytes(repo, txn, HIVE_PATH, OTHER_CONTENT)
+    result: types.CommitResponse = repo.commit(txn)
 
     assert result.seq == 2
     assert result.files_added_count == 0
@@ -225,8 +227,8 @@ def test_update_replaces_content_at_path(repo: repository.Repository) -> None:
 def test_update_preserves_object_history(repo: repository.Repository) -> None:
     add_and_commit(repo, HIVE_PATH, CONTENT)
     txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, OTHER_CONTENT)
-    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, OTHER_CONTENT)
-    repo.commit(txn.txn_uuid)
+    conftest.upload_bytes(repo, txn, HIVE_PATH, OTHER_CONTENT)
+    repo.commit(txn)
 
     # both the old and new content objects remain stored — the old row is marked removed, the new one is live
     assert conftest.object_path(repo, CONTENT).read_bytes() == CONTENT
@@ -256,15 +258,15 @@ def test_update_rejects_concurrent_change_at_commit(repo: repository.Repository)
     add_and_commit(repo, HIVE_PATH, CONTENT)
 
     txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, OTHER_CONTENT)
-    conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, OTHER_CONTENT)
+    conftest.upload_bytes(repo, txn, HIVE_PATH, OTHER_CONTENT)
 
     # another transaction changes the path before this one commits
     interloper_txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, b"interloper")
-    conftest.upload_bytes(repo, interloper_txn.txn_uuid, HIVE_PATH, b"interloper")
-    repo.commit(interloper_txn.txn_uuid)
+    conftest.upload_bytes(repo, interloper_txn, HIVE_PATH, b"interloper")
+    repo.commit(interloper_txn)
 
     with pytest.raises(transaction.TransactionConflictError, match="has changed since it was declared for update"):
-        repo.commit(txn.txn_uuid)
+        repo.commit(txn)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -281,4 +283,4 @@ def test_update_upload_uses_new_sha256(repo: repository.Repository) -> None:
 
     txn: transaction.Transaction = begin_update(repo, HIVE_PATH, CONTENT, OTHER_CONTENT)
     with pytest.raises(transaction.TransactionValidationError, match="sha256 mismatch"):
-        conftest.upload_bytes(repo, txn.txn_uuid, HIVE_PATH, CONTENT)
+        conftest.upload_bytes(repo, txn, HIVE_PATH, CONTENT)
