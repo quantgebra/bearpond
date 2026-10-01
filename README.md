@@ -140,10 +140,7 @@ npm run build           # outputs to packages/server/src/bearpond/server/static/
 - **Retention policies** — how long removed content stays recoverable
 - **Compaction** — combine smaller files into larger ones by adding new aggregate paths and removing the now-redundant small ones
 - **Pluggable backends** — Postgres metadata store and S3 object store for stateless HA
-- **Point-in-time pull** — `pull --seq N` to mirror the lake as of any version (the store already reconstructs any seq server-side) *(implemented)*
-- **Subset pull** — `pull --query key=value ...` to mirror only files whose path contains the given segments *(implemented)*
-- **Revert** — `revert --seq N` to roll back to a prior version as a new commit, without rewriting history *(implemented)*
-- **Web UI** — React interface for browsing repositories, manifests, and commit history *(scaffolded; admin and user management via the UI is future work)*
+- **Web UI administration** — admin and user management in the web UI (browsing repositories, manifests, and commit history already ships)
 
 ## License
 
