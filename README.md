@@ -60,156 +60,33 @@ Three rules keep the model honest: a path can only be added if it does not alrea
 Requires Python 3.11+.
 
 ```bash
-pip install bearpond            # client only — clone, add, commit, pull, revert
-pip install bearpond-server     # the server — FastAPI/uvicorn/PyYAML, a separate distribution
-```
-
-`bearpond` and `bearpond-server` are independent PyPI packages, sharing only `bearpond-protocol` (the wire-format types) — installing the client never pulls down any server source code.
-
-**Run the server.** Create a config directory with a `server.yaml` pointing at the server's two storage locations — one server hosts many repositories, all sharing one metadata database and one object store:
-
-```yaml
-# relative paths resolve against this file's directory; these are also the defaults
-db_path: bearpond.sqlite
-object_store_root: objects
+pip install bearpond            # client only: clone, add, commit, pull, revert
+pip install bearpond-server     # the server, a separate distribution
 ```
 
 ```bash
-export BEARPOND_CONFIG_DIR=/path/to/config
+export BEARPOND_CONFIG_DIR=/path/to/config          # holds server.yaml
 uvicorn bearpond.server.api.app:app --port 8000
-```
 
-On Windows, set the variable with `set BEARPOND_CONFIG_DIR=C:\path\to\config` (cmd.exe) or `$env:BEARPOND_CONFIG_DIR = "C:\path\to\config"` (PowerShell). bearpond runs on Linux, macOS, and Windows; on Windows, directory-level fsync durability is unavailable and skipped (file-level fsyncs and SQLite transactions are unaffected).
-
-**Create a repository and clone it.** Workspaces are always bound to a remote repo — `clone` is the only way one comes into being, and afterwards no command needs a `--server` flag (the binding lives in `.bearpond/config.json`):
-
-```bash
 bearpond repo-create http://localhost:8000/trades
 bearpond clone http://localhost:8000/trades ./trades
 cd trades
-
-# clone straight into a filtered view instead of cloning full and then pulling with a query —
-# clone accepts the same --query syntax as pull (see "Pull a subset (a filtered view)" below)
-bearpond clone http://localhost:8000/trades ./trades-2024-01 --query month=01
-```
-
-**Commit files.** Like git, staging is local and the server interaction is one short, atomic action — `add` records file metadata in the staging area (`.bearpond/staged.json`), and `commit` begins a transaction, uploads everything staged, and commits in one go. All run from inside the cloned workspace:
-
-```bash
-bearpond add ./out/year=2024            # a directory expands to the files beneath it
-bearpond add ./out/year=2024/month=01/part.parquet  # re-adding a tracked file stages an update
-bearpond add ./out/year=2024/month=01/data.csv      # CSV, JSON, ORC, raw text, etc. are all valid
-bearpond rm ./out/year=2024/month=01/part.parquet   # stage a removal (offline, like add)
-bearpond status                         # staged add/remove/update / untracked / modified / missing / pending
-bearpond commit -m "january trades"     # begin + upload + commit as one short transaction
-bearpond log --limit 10                 # commit history: hash, seq, author, message
-```
-
-**Revert to a prior version.** `revert` records a brand-new commit whose content matches an earlier manifest version — like `git revert`, not `git reset`: every commit in between stays in the history untouched, nothing is rewritten or deleted. No file bytes move over the wire — content is content-addressed, so the server already has everything it needs:
-
-```bash
-bearpond revert --seq 42 -m "rolling back a bad ingest"
-# creates a new commit that restores the lake to how it looked at manifest-00000042;
-# run `bearpond pull` afterward to update your local workspace to the new commit
-```
-
-**Pull the latest:**
-
-```bash
+bearpond add ./out/year=2024
+bearpond commit -m "january trades"
 bearpond pull
-# the workspace now holds a verified local mirror, with .bearpond/manifest.json
-# recording exactly which server manifest it represents
 ```
 
-**Pull a specific version:**
+Full instructions live with each package, see below.
 
-```bash
-bearpond pull --seq 42
-# mirror the lake as of manifest seq 42 instead of the latest
-```
+## Packages
 
-**Pull a subset (a filtered view):**
+bearpond is three independent distributions. The client and server share only the wire-format types.
 
-```bash
-bearpond pull --query month=01
-# workspace now tracks only paths whose logical path contains month=01
-# files that no longer match are pruned; the saved query is in .bearpond/query.json
-
-bearpond pull --query month=01 day=15
-# multiple terms are ANDed: the path must contain every segment
-
-bearpond pull --query month=01 --query month=02
-# repeat --query to OR whole groups: paths matching month=01 OR month=02
-
-bearpond pull --query trades 2024-08-22
-# arbitrary paths work too; each term must appear as a /-separated segment
-
-bearpond pull --query
-# switch back to a full mirror (no filter)
-
-bearpond pull
-# re-sync the current saved view (full mirror or filtered view)
-```
-
-Switching queries or `--seq` requires a clean workspace — no in-progress pull and no staged changes. The workspace records the full server manifest in `.bearpond/manifest.json`, the current query in `.bearpond/query.json`, and the paths it has taken responsibility for in `.bearpond/pulled.json`.
-
-Hive-style `key=value` directories are the most useful convention for subset pulls, but they are not required.
-
-**Auth:** the server checks a bearer token when `BEARPOND_TOKEN` is set (unset = open, for local use). The CLI reads the same variable. Real multi-user auth is on the roadmap (below).
-
-## Web UI
-
-bearpond ships with a small React web interface for browsing repositories, manifests, and commit history. It is served by the same FastAPI process on `/`.
-
-**Production use:** build the frontend once and restart the server:
-
-```bash
-cd web
-npm install
-npm run build
-```
-
-The build output lands in `packages/server/src/bearpond/server/static/`, which FastAPI serves. Then start the server normally:
-
-```bash
-export BEARPOND_CONFIG_DIR=/path/to/config
-uvicorn bearpond.server.api.app:app --port 8000
-```
-
-Open `http://localhost:8000/` to browse repositories.
-
-**Development:** run the FastAPI backend and Vite dev server side by side. The dev server proxies API calls to the backend:
-
-Terminal 1:
-```bash
-export BEARPOND_CONFIG_DIR=/path/to/config
-uvicorn bearpond.server.api.app:app --port 8000
-```
-
-Terminal 2:
-```bash
-cd web
-npm run dev
-```
-
-Open `http://localhost:5173/` for live-reload development.
-
-## HTTP API
-
-| Method & path | Purpose |
-|---|---|
-| `GET /repos` | list repositories |
-| `POST /repos` | create a repository (`{"name": …}`) |
-| `POST /repos/{repo}/transactions` | begin a transaction (declare added/removed/updated files, plus `user`/`reason`) |
-| `PUT /repos/{repo}/transactions/{txn_uuid}/files/{path}` | upload one declared file's content |
-| `POST /repos/{repo}/transactions/{txn_uuid}/commit` | commit (idempotent — safe to retry) |
-| `DELETE /repos/{repo}/transactions/{txn_uuid}` | abort |
-| `GET /repos/{repo}/transactions/{txn_uuid}` | transaction status (`open` / `committed`) |
-| `GET /repos/{repo}/manifest` | the current manifest (files, sha256, sizes, seq) |
-| `GET /repos/{repo}/commits` | commit history, newest first (`?limit=&before_seq=`) |
-| `GET /repos/{repo}/files/{path}` | download a file, or list a prefix (`?limit=&cursor=`) |
-
-Errors are JSON `{"detail": …}` with sensible statuses: 400 invalid, 401 unauthenticated, 404 unknown, 409 conflict with another writer.
+| Package | PyPI name | What it is |
+|---|---|---|
+| [`packages/client`](packages/client) | `bearpond` | workspace client and CLI: add, rm, commit, pull, revert, status, log |
+| [`packages/server`](packages/server) | `bearpond-server` | FastAPI server, metadata and object stores, web UI, HTTP API, configuration |
+| [`packages/protocol`](packages/protocol) | `bearpond-protocol` | the wire format shared by client and server |
 
 ## How it works
 
@@ -227,7 +104,7 @@ Layout of this repo:
 
 ```
 packages/
-  protocol/src/bearpond/types.py   # the wire protocol shared by server and client (bearpond-protocol on PyPI)
+  protocol/src/bearpond/protocol/  # the wire protocol shared by server and client (bearpond-protocol on PyPI)
   server/src/bearpond/server/      # FastAPI app, repository, transaction, metadata store, object store, static UI files (bearpond-server)
   client/src/bearpond/client/      # workspace client + CLI (add/rm/commit/pull/revert/status) (bearpond)
 web/                  # React + TypeScript web UI source (Vite)
@@ -238,7 +115,7 @@ tests/                # pytest suite (domain, API, client end-to-end) — spans 
 
 ```bash
 pip install -e packages/protocol -e packages/server -e "packages/client[dev]"
-python -m pytest        # 128 tests: domain, API over live HTTP, end-to-end client flows
+python -m pytest        # 130 tests: domain, API over live HTTP, end-to-end client flows
 ```
 
 The web UI lives in `web/` and uses Vite + React + TypeScript. To work on it:

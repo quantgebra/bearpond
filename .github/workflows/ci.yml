@@ -85,6 +85,14 @@ jobs:
           name: web-static
           path: packages/server/src/bearpond/server/static
 
+      # each package carries its own copy of the license files, so a stale copy would ship the wrong text
+      - name: Check license file copies
+        run: |
+          for package in protocol server client; do
+            cmp LICENSE "packages/$package/LICENSE"
+            cmp NOTICE "packages/$package/NOTICE"
+          done
+
       - name: Build distributions
         run: |
           python -m pip install build
