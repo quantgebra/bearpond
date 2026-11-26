@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from quantgebra.auth.http import auth_router
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_404_NOT_FOUND,
@@ -10,21 +11,24 @@ from starlette.status import (
     HTTP_500_INTERNAL_SERVER_ERROR,
 )
 
-from .. import metadata_store, repository, server as server_module, transaction, utils
+from .. import repository, server as server_module, transaction, utils
 from .. import ui as ui_module
-from . import commits, files, manifest, repos, transactions, version
+from . import commits, dependencies, files, manifest, repos, transactions, version
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # the metadata store (Postgres/SQLite) is the source of truth and recovers itself; no startup reconciliation is
-    # required now that exported manifest files and staging directories have been removed
+    # required now that exported manifest files and staging directories have been removed; what authentication needs
+    # at startup is to say how the first administrator gets in, when the server has nobody who can log in yet
+    server_module.get_server().auth.start()
     yield
 
 
 app: FastAPI = FastAPI(lifespan=lifespan)
 app.include_router(version.router)
+app.include_router(auth_router.AuthRouter(dependencies.get_auth_services, dependencies.get_auth_gate).router)
 app.include_router(repos.router)
 app.include_router(commits.router)
 app.include_router(transactions.router)
@@ -77,20 +81,6 @@ def handle_invalid_repository_name(request: Request, exc: repository.InvalidRepo
 # ----------------------------------------------------------------------------------------------------------------------
 @app.exception_handler(repository.RepositoryError)
 def handle_repository_error(request: Request, exc: repository.RepositoryError) -> JSONResponse:
-    return JSONResponse(status_code=HTTP_500_INTERNAL_SERVER_ERROR, content={"detail": str(exc)})
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-# a MetadataConflictError should normally be translated to TransactionConflictError inside the repository — if one
-# ever escapes, it's still a conflict, not a server fault
-@app.exception_handler(metadata_store.MetadataConflictError)
-def handle_metadata_conflict(request: Request, exc: metadata_store.MetadataConflictError) -> JSONResponse:
-    return JSONResponse(status_code=HTTP_409_CONFLICT, content={"detail": str(exc)})
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-@app.exception_handler(metadata_store.MetadataStoreError)
-def handle_metadata_store_error(request: Request, exc: metadata_store.MetadataStoreError) -> JSONResponse:
     return JSONResponse(status_code=HTTP_500_INTERNAL_SERVER_ERROR, content={"detail": str(exc)})
 
 

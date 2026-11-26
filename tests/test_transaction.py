@@ -5,6 +5,8 @@ import pytest
 import conftest
 from bearpond.protocol import types
 from bearpond.server import utils
+from bearpond.server import commit_record
+from bearpond.server import object_record
 from bearpond.server import repository
 from bearpond.server import transaction
 
@@ -74,10 +76,10 @@ def test_commit_lands_object_manifest_and_record(repo: repository.Repository) ->
     assert object_file.read_bytes() == CONTENT
     assert utils.sha256_file(object_file) == conftest.sha256_hex(CONTENT)
     # the transaction state is deleted once the commit is recorded
-    assert repo.metadata_store.get_transaction(txn.txn_uuid) is None
+    assert repo.get_transaction(txn.txn_uuid) is None
 
     # the mapping points the path at the object, and the commit is on record
-    current: types.FileMetadata | None = repo.metadata_store.get_file_metadata(HIVE_PATH)
+    current: types.FileMetadata | None = object_record.ObjectRecord.get_file_by_path(repo.session, repo.name, HIVE_PATH)
     assert current is not None
     assert current.sha256 == conftest.sha256_hex(CONTENT)
 
@@ -86,7 +88,7 @@ def test_commit_lands_object_manifest_and_record(repo: repository.Repository) ->
     assert manifest.seq == 1
     assert [f.path for f in manifest.files] == [HIVE_PATH]
 
-    record: types.CommitRecord | None = repo.metadata_store.get_commit_record_by_txn_uuid(txn.txn_uuid)
+    record: types.CommitRecord | None = commit_record.CommitRecord.get_commit_by_txn_uuid(repo.session, repo.name, txn.txn_uuid)
     assert record is not None
     assert record.seq == 1
 
@@ -139,7 +141,7 @@ def test_commit_removal_unmaps_path_but_keeps_object(repo: repository.Repository
     assert result.files_removed_count == 1
 
     # the mapping is gone but the object stays — retained content is what makes restore-without-reupload possible
-    assert repo.metadata_store.get_file_metadata(HIVE_PATH) is None
+    assert object_record.ObjectRecord.get_file_by_path(repo.session, repo.name, HIVE_PATH) is None
     assert conftest.object_path(repo, CONTENT).read_bytes() == CONTENT
 
     latest: types.Manifest | None = conftest.current_manifest(repo)
@@ -168,7 +170,7 @@ def test_readd_after_removal_starts_a_new_lifecycle(repo: repository.Repository)
 
     assert readded.seq == 3
 
-    current: types.FileMetadata | None = repo.metadata_store.get_file_metadata(HIVE_PATH)
+    current: types.FileMetadata | None = object_record.ObjectRecord.get_file_by_path(repo.session, repo.name, HIVE_PATH)
     assert current is not None
     assert current.sha256 == conftest.sha256_hex(OTHER_CONTENT)
 
@@ -183,7 +185,7 @@ def test_abort_clears_transaction_state_but_leaves_orphan_object(repo: repositor
     conftest.upload_bytes(repo, txn, HIVE_PATH, CONTENT)
     repo.abort(txn)
     # the transaction state is gone but the object remains in the content-addressed store as an orphan
-    assert repo.metadata_store.get_transaction(txn.txn_uuid) is None
+    assert repo.get_transaction(txn.txn_uuid) is None
     assert repo.object_store.contains_address(conftest.sha256_hex(CONTENT))
 
 
@@ -218,7 +220,7 @@ def test_update_replaces_content_at_path(repo: repository.Repository) -> None:
     assert result.files_removed_count == 0
     assert result.files_updated_count == 1
 
-    current: types.FileMetadata | None = repo.metadata_store.get_file_metadata(HIVE_PATH)
+    current: types.FileMetadata | None = object_record.ObjectRecord.get_file_by_path(repo.session, repo.name, HIVE_PATH)
     assert current is not None
     assert current.sha256 == conftest.sha256_hex(OTHER_CONTENT)
 
@@ -234,7 +236,7 @@ def test_update_preserves_object_history(repo: repository.Repository) -> None:
     assert conftest.object_path(repo, CONTENT).read_bytes() == CONTENT
     assert conftest.object_path(repo, OTHER_CONTENT).read_bytes() == OTHER_CONTENT
 
-    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    records: list[types.CommitRecord] = commit_record.CommitRecord.get_all_commits(repo.session, repo.name)
     assert records[1].updated[0].old_sha256 == conftest.sha256_hex(CONTENT)
     assert records[1].updated[0].new_sha256 == conftest.sha256_hex(OTHER_CONTENT)
 

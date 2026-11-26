@@ -12,6 +12,9 @@ license-files = ["LICENSE", "NOTICE"]
 readme = "README.md"
 dependencies = [
     "bearpond-protocol",
+    "quantgebra-auth[fastapi]",
+    "sqlalchemy>=2.0.45",
+    "alembic>=1.17",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "pydantic>=2.6",
@@ -19,6 +22,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+postgres = [
+    "quantgebra-auth[postgres]",
+]
 dev = [
     "types-PyYAML",
 ]
@@ -28,4 +34,4 @@ where = ["src"]
 namespaces = true
 
 [tool.setuptools.package-data]
-bearpond = ["server/static/**/*", "server/static/*"]
+bearpond = ["server/static/**/*", "server/static/*", "server/py.typed", "server/migrations/script.py.mako"]

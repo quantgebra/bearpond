@@ -2,7 +2,7 @@
 
 A small, transactional data lake — a pond, really — where bears (Panda and Polar) come to play.
 
-bearpond is a central data server and sync client for versioned collections of files, built for teams. It gives you the semantics of a [lakehouse](https://www.databricks.com/glossary/data-lakehouse) without the lakehouse machinery. Bearpond includes content-addressed storage, atomic commits, and point-in-time manifests from one server process, a metadata store, and an object store — no Spark, no metastore. The default setup uses SQLite and local disk; the architecture is aimed at swapping in Postgres and S3 for HA deployments.
+bearpond is a central data server and sync client for versioned collections of files, built for teams. It gives you the semantics of a [lakehouse](https://www.databricks.com/glossary/data-lakehouse) without the lakehouse machinery. Bearpond includes content-addressed storage, atomic commits, and point-in-time manifests from one server process, a metadata store, and an object store — no Spark, no metastore. The default setup uses SQLite and local disk; the metadata runs on SQLAlchemy, so PostgreSQL is a setting, and S3 for the objects is on the roadmap.
 
 ## Who it's for
 
@@ -80,13 +80,14 @@ Full instructions live with each package, see below.
 
 ## Packages
 
-bearpond is three independent distributions. The client and server share only the wire-format types.
+bearpond is three independent distributions. The client and server share only the wire-format types. A fourth package, `quantgebra-auth`, is a shared authentication library that the server uses.
 
 | Package | PyPI name | What it is |
 |---|---|---|
 | [`packages/client`](packages/client) | `bearpond` | workspace client and CLI: add, rm, commit, pull, revert, status, log |
 | [`packages/server`](packages/server) | `bearpond-server` | FastAPI server, metadata and object stores, web UI, HTTP API, configuration |
 | [`packages/protocol`](packages/protocol) | `bearpond-protocol` | the wire format shared by client and server |
+| [`packages/auth`](packages/auth) | `quantgebra-auth` | local and OIDC authentication, sessions, groups and rules *(used by the server for logins and permissions)* |
 
 ## How it works
 
@@ -114,7 +115,7 @@ tests/                # pytest suite (domain, API, client end-to-end) — spans 
 ## Development
 
 ```bash
-pip install -e packages/protocol -e "packages/server[dev]" -e "packages/client[dev]"
+pip install -e packages/protocol -e "packages/server[dev]" -e "packages/client[dev]" -e "packages/auth[dev]"
 python -m pytest        # 130 tests: domain, API over live HTTP, end-to-end client flows
 ```
 
@@ -135,7 +136,7 @@ npm run build           # outputs to packages/server/src/bearpond/server/static/
 
 ## Roadmap
 
-- **Multi-user auth** — per-user tokens and read/write roles (today: single shared bearer token)
+- **Logging in from the command line** — per-user tokens and service accounts for scripts, and a login page in the web UI (the server already has users, groups, read/write/admin permissions and OIDC; the CLI still sends one shared bearer token)
 - **Garbage collection** — reclaim objects no longer referenced by any retained version
 - **Retention policies** — how long removed content stays recoverable
 - **Compaction** — combine smaller files into larger ones by adding new aggregate paths and removing the now-redundant small ones

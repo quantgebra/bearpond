@@ -1,10 +1,13 @@
 from pathlib import Path
 
 import pytest
+from sqlalchemy import orm
 
 import conftest
 from bearpond.protocol import types
 from bearpond.server import config
+from bearpond.server import commit_record
+from bearpond.server import object_record
 from bearpond.server import repository
 from bearpond.server import server as server_module
 from bearpond.server import transaction
@@ -143,21 +146,23 @@ def test_multiple_repos_share_one_db_but_remain_isolated(repo_root: Path, monkey
             object_store_root=repo_root / "objects",
         )
     )
-    first: repository.Repository = srv.create_repository("first")
-    second: repository.Repository = srv.create_repository("second")
+    session: orm.Session = orm.Session(srv.engine, expire_on_commit=False)
+    first: repository.Repository = srv.create_repository(session, "first")
+    second: repository.Repository = srv.create_repository(session, "second")
 
     conftest.commit_files(first, {"year=2024/a.csv": b"first repo"})
     conftest.commit_files(second, {"year=2024/b.csv": b"second repo"})
 
-    assert first.metadata_store.get_current_seq() == 1
-    assert second.metadata_store.get_current_seq() == 1
+    assert first.get_current_seq() == 1
+    assert second.get_current_seq() == 1
 
-    first_manifest: types.Manifest = first.metadata_store.get_manifest(1)
-    second_manifest: types.Manifest = second.metadata_store.get_manifest(1)
+    first_manifest: types.Manifest = first.get_manifest(1)
+    second_manifest: types.Manifest = second.get_manifest(1)
     assert [f.path for f in first_manifest.files] == ["year=2024/a.csv"]
     assert [f.path for f in second_manifest.files] == ["year=2024/b.csv"]
 
-    assert srv.list_repositories() == ["first", "second"]
+    assert srv.list_repositories(session) == ["first", "second"]
+    session.close()
     server_module.close()
 
 
@@ -169,8 +174,9 @@ def test_multiple_repos_share_one_object_store(repo_root: Path, monkeypatch: pyt
             object_store_root=repo_root / "objects",
         )
     )
-    first: repository.Repository = srv.create_repository("first")
-    second: repository.Repository = srv.create_repository("second")
+    session: orm.Session = orm.Session(srv.engine, expire_on_commit=False)
+    first: repository.Repository = srv.create_repository(session, "first")
+    second: repository.Repository = srv.create_repository(session, "second")
 
     shared_content: bytes = b"shared bytes"
     conftest.commit_files(first, {"year=2024/shared.csv": shared_content})
@@ -181,6 +187,7 @@ def test_multiple_repos_share_one_object_store(repo_root: Path, monkeypatch: pyt
     assert first_location == second_location
     assert first_location.read_bytes() == shared_content
 
+    session.close()
     server_module.close()
 
 
@@ -196,7 +203,7 @@ def test_revert_restores_a_removed_file(repo: repository.Repository) -> None:
     result: types.CommitResponse = repo.revert(1, reason="bring it back")
 
     assert result.seq == 3
-    manifest: types.Manifest = repo.metadata_store.get_manifest(3)
+    manifest: types.Manifest = repo.get_manifest(3)
     assert [f.path for f in manifest.files] == [HIVE_PATH]
 
 
@@ -221,7 +228,7 @@ def test_revert_undoes_an_update(repo: repository.Repository) -> None:
     result: types.CommitResponse = repo.revert(1)
 
     assert result.seq == 3
-    reverted: types.FileMetadata | None = repo.metadata_store.get_file_metadata(HIVE_PATH)
+    reverted: types.FileMetadata | None = object_record.ObjectRecord.get_file_by_path(repo.session, repo.name, HIVE_PATH)
     assert reverted is not None and reverted.sha256 == conftest.sha256_hex(CONTENT)
 
 
@@ -246,6 +253,6 @@ def test_revert_creates_a_new_commit_chained_to_head(repo: repository.Repository
 
     repo.revert(1)  # seq 3: drops OTHER_PATH
 
-    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    records: list[types.CommitRecord] = commit_record.CommitRecord.get_all_commits(repo.session, repo.name)
     assert len(records) == 3
     assert records[2].parent_commit_hash == records[1].commit_hash

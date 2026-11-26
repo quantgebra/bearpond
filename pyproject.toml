@@ -1,4 +1,5 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# lets the test suite import bearpond straight from source across all three packages, without an editable install
-pythonpath = ["packages/protocol/src", "packages/client/src", "packages/server/src"]
+markers = ["postgres: runs against a throwaway PostgreSQL, which needs docker; skipped where there is none"]
+# lets the test suite import the packages straight from source, without an editable install
+pythonpath = ["packages/protocol/src", "packages/client/src", "packages/server/src", "packages/auth/src"]

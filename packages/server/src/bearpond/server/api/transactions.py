@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, Request
+from quantgebra.auth.http import auth_gate
 
 from bearpond.protocol import types
 from .. import repository
-from .. import server as server_module
+from .. import commit_record
 from .. import transaction
 from . import dependencies
 
-router: APIRouter = APIRouter(prefix="/repos/{repo_name}/transactions", tags=["transactions"], dependencies=[Depends(dependencies.require_auth)])
+router: APIRouter = APIRouter(
+    prefix="/repos/{repo_name}/transactions", tags=["transactions"], dependencies=[Depends(dependencies.require_write)]
+)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -14,9 +17,14 @@ router: APIRouter = APIRouter(prefix="/repos/{repo_name}/transactions", tags=["t
 def begin_transaction(
     repo_name: str,
     manifest: types.TransactionManifest,
-    server: server_module.Server = Depends(dependencies.get_server),
+    found: auth_gate.RequestAuth = Depends(dependencies.require_write),
+    repo: repository.Repository = Depends(dependencies.get_repository),
 ) -> types.BeginTransactionResponse:
-    txn: transaction.Transaction = server.get_repository(repo_name).begin_transaction(manifest)
+    # a person who is logged in is the author of what they commit, whatever the client says; the shared token has no
+    # person behind it, so what the client says is kept
+    if found.session is not None:
+        manifest = manifest.model_copy(update={"user": found.actor.username})
+    txn: transaction.Transaction = repo.begin_transaction(manifest)
     return types.BeginTransactionResponse(
         txn_uuid=txn.txn_uuid,
         added_files=[f.path for f in txn.added],
@@ -32,9 +40,8 @@ async def upload_file(
     txn_uuid: types.TxnUuid,
     rel_path: str,
     request: Request,
-    server: server_module.Server = Depends(dependencies.get_server),
+    repo: repository.Repository = Depends(dependencies.get_repository),
 ) -> types.FileMetadata:
-    repo: repository.Repository = server.get_repository(repo_name)
     txn: transaction.Transaction = _require_open_transaction(repo, txn_uuid)
     return await repo.upload_file(txn, rel_path, request.stream())
 
@@ -44,9 +51,8 @@ async def upload_file(
 def get_transaction_status(
     repo_name: str,
     txn_uuid: types.TxnUuid,
-    server: server_module.Server = Depends(dependencies.get_server),
+    repo: repository.Repository = Depends(dependencies.get_repository),
 ) -> types.TransactionStatus:
-    repo: repository.Repository = server.get_repository(repo_name)
     txn: transaction.Transaction | None = repo.get_transaction(txn_uuid)
     result: types.TransactionStatus
     if txn is not None:
@@ -54,7 +60,9 @@ def get_transaction_status(
     else:
         # no transaction state in the store — the transaction either never existed (or was aborted), or already
         # committed; the commit record tells the two apart
-        record: types.CommitRecord | None = repo.metadata_store.get_commit_record_by_txn_uuid(txn_uuid)
+        record: types.CommitRecord | None = commit_record.CommitRecord.get_commit_by_txn_uuid(
+            repo.session, repo.name, txn_uuid
+        )
         if record is not None:
             result = types.TransactionStatus(
                 txn_uuid=record.txn_uuid, status="committed", seq=record.seq, created_at=record.created_at
@@ -69,10 +77,9 @@ def get_transaction_status(
 def commit_transaction(
     repo_name: str,
     txn_uuid: types.TxnUuid,
-    server: server_module.Server = Depends(dependencies.get_server),
+    repo: repository.Repository = Depends(dependencies.get_repository),
 ) -> types.CommitResponse:
     result: types.CommitResponse | None
-    repo: repository.Repository = server.get_repository(repo_name)
     txn: transaction.Transaction | None = repo.get_transaction(txn_uuid)
     if txn is not None:
         # user and reason were declared at begin time
@@ -82,7 +89,7 @@ def commit_transaction(
         result = repo.get_commit_response(txn_uuid)
         if result is None:
             raise transaction.TransactionNotFoundError(f"unknown transaction: {txn_uuid}")
-        
+
     # result can not be None since we raise an Error if it's None
     assert result is not None
     return result
@@ -93,9 +100,8 @@ def commit_transaction(
 def abort_transaction(
     repo_name: str,
     txn_uuid: types.TxnUuid,
-    server: server_module.Server = Depends(dependencies.get_server),
+    repo: repository.Repository = Depends(dependencies.get_repository),
 ) -> None:
-    repo: repository.Repository = server.get_repository(repo_name)
     txn: transaction.Transaction = _require_open_transaction(repo, txn_uuid)
     repo.abort(txn)
 
@@ -105,9 +111,8 @@ def abort_transaction(
 def revert(
     repo_name: str,
     request: types.RevertRequest,
-    server: server_module.Server = Depends(dependencies.get_server),
+    repo: repository.Repository = Depends(dependencies.get_repository),
 ) -> types.CommitResponse:
-    repo: repository.Repository = server.get_repository(repo_name)
     return repo.revert(request.target_seq, user=request.user, reason=request.reason)
 
 

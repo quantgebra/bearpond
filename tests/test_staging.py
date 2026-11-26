@@ -9,6 +9,7 @@ from bearpond.protocol import types
 from bearpond.client import bearpond_client
 from bearpond.client import server_client
 from bearpond.client import cli
+from bearpond.server import commit_record
 from bearpond.server import repository
 
 HIVE_PATH = "year=2024/month=01/part.parquet"
@@ -101,7 +102,7 @@ def test_cmd_commit_end_to_end(workdir: Path, live_server: str, repo: repository
     assert manifest is not None
     assert sorted(f.path for f in manifest.files) == [HIVE_PATH, OTHER_PATH]
 
-    records: list[types.CommitRecord] = repo.metadata_store.get_commit_record_list()
+    records: list[types.CommitRecord] = commit_record.CommitRecord.get_all_commits(repo.session, repo.name)
     assert records[0].reason == "first commit"
 
 

@@ -86,7 +86,7 @@ Switching queries or `--seq` requires a clean workspace — no in-progress pull 
 
 Hive-style `key=value` directories are the most useful convention for subset pulls, but they are not required.
 
-**Auth:** the server checks a bearer token when `BEARPOND_TOKEN` is set (unset = open, for local use). The CLI reads the same variable. Real multi-user auth is on the roadmap.
+**Auth:** the server checks a bearer token when `BEARPOND_TOKEN` is set (unset = open, for local use). The CLI reads the same variable. Whoever sends the token is an administrator of the server; logging in as a person from the command line is on the roadmap.
 
 
 ## More

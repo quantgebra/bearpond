@@ -1,11 +1,13 @@
 import importlib.metadata
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import httpx
 import pytest
 
 import conftest
 from bearpond.protocol import types
+from bearpond.server import config
+from bearpond.server import commit_record
 from bearpond.server import repository
 
 HIVE_PATH = "year=2024/month=01/part.parquet"
@@ -85,14 +87,16 @@ def test_full_write_read_flow_over_http(api: httpx.Client) -> None:
 
 # ----------------------------------------------------------------------------------------------------------------------
 def test_auth_is_open_when_no_token_configured(api: httpx.Client) -> None:
-    # the repo fixture deletes BEARPOND_TOKEN, so every request passes unchecked
+    # the repo fixture configures the server without a token, so every request passes unchecked
     assert api.get(f"/repos/{conftest.REPO_NAME}/manifest").status_code == 404
     assert api.post(f"/repos/{conftest.REPO_NAME}/transactions", json={"added": [], "removed": []}).status_code == 400
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def test_auth_rejects_missing_and_wrong_tokens(api: httpx.Client, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BEARPOND_TOKEN", "s3cret")
+def test_auth_rejects_missing_and_wrong_tokens(
+    api: httpx.Client, reconfigure: Callable[[str | None, config.AuthSettings | None], None]
+) -> None:
+    reconfigure("s3cret", None)
 
     assert api.get(f"/repos/{conftest.REPO_NAME}/manifest").status_code == 401
     assert api.get(f"/repos/{conftest.REPO_NAME}/manifest", headers={"Authorization": "Bearer wrong"}).status_code == 401
@@ -131,7 +135,7 @@ def test_commit_records_the_user_and_reason(api: httpx.Client, repo: repository.
     response: httpx.Response = api.post(f"/repos/{conftest.REPO_NAME}/transactions/{txn_uuid}/commit")
     assert response.status_code == 200
 
-    record: types.CommitRecord | None = repo.metadata_store.get_commit_record_by_txn_uuid(txn_uuid)
+    record: types.CommitRecord | None = commit_record.CommitRecord.get_commit_by_txn_uuid(repo.session, repo.name, txn_uuid)
     assert record is not None
     assert record.user == "nightly-etl"
     assert record.reason == "why we did it"
