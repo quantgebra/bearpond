@@ -184,26 +184,36 @@ class AuthService:
             user: user_record.UserRecord | None = user_record.UserRecord.get_by_user_id(self.session, session.user_id)
 
             if user is not None and not user.is_disabled:
-                given_names: list[str] = user_group_record.UserGroupRecord.get_group_names_by_user_id(
-                    self.session, user.user_id
-                )
-                mapped_names: list[str] = group_mapping_record.GroupMappingRecord.get_group_names_by_provider_groups(
-                    self.session, session.provider_name, session.provider_group_names
-                )
-                group_names: list[str] = sorted(set(mapped_names) | set(given_names))
-                grants: list[grant.Grant] = grant_rule.GrantRule.get_grants_for(self.config.rules, group_names)
-                request_actor: actor.Actor = actor.Actor(
-                    user.user_id,
-                    user.username,
-                    user.display_name,
-                    user.issuer,
-                    group_names,
-                    grants,
-                    self.config.catalog,
+                request_actor: actor.Actor = self.make_actor(
+                    user, session.provider_name, session.provider_group_names
                 )
                 result = AuthenticatedRequest(request_actor, session)
 
         return result
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def make_actor(
+        self, user: user_record.UserRecord, provider_name: str, provider_group_names: list[str]
+    ) -> actor.Actor:
+        # what the user may do, worked out now from their groups: those that the provider sent, mapped to groups of the
+        # service, and those that an administrator gave them; an api key has no provider and sends none
+        given_names: list[str] = user_group_record.UserGroupRecord.get_group_names_by_user_id(
+            self.session, user.user_id
+        )
+        mapped_names: list[str] = group_mapping_record.GroupMappingRecord.get_group_names_by_provider_groups(
+            self.session, provider_name, provider_group_names
+        )
+        group_names: list[str] = sorted(set(mapped_names) | set(given_names))
+        grants: list[grant.Grant] = grant_rule.GrantRule.get_grants_for(self.config.rules, group_names)
+        return actor.Actor(
+            user.user_id,
+            user.username,
+            user.display_name,
+            user.issuer,
+            group_names,
+            grants,
+            self.config.catalog,
+        )
 
     # ------------------------------------------------------------------------------------------------------------------
     def logout(self, token: str) -> None:

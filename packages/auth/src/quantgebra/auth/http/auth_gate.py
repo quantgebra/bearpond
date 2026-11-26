@@ -50,11 +50,17 @@ class AuthGate:
 
     # ------------------------------------------------------------------------------------------------------------------
     def recognize(self, request: Request, services: auth_services.AuthServices) -> RequestAuth | None:
-        # finds out who made the request, from the cookie of a login; in development mode nobody logs in and everybody
-        # is the development user
+        # finds out who made the request: from the api key that a script sends, which is the only thing looked at when
+        # one is sent, or else from the cookie of a login; in development mode nobody logs in and everybody is the
+        # development user
         result: RequestAuth | None = None
+        bearer_token: str = read_bearer_token(request)
         if services.auth.config.mode == "none":
             result = RequestAuth(services.auth.get_development_actor(), None)
+        elif bearer_token:
+            key_actor: actor.Actor | None = services.api_keys.authenticate(bearer_token)
+            if key_actor is not None:
+                result = RequestAuth(key_actor, None)
         else:
             token: str | None = cookies.get_cookie(request, self.cookie_name)
             if token is not None:
@@ -120,3 +126,10 @@ class AuthGate:
     def _get_service_origin(self, services: auth_services.AuthServices) -> str:
         parsed_url: ParseResult = urlparse(services.auth.config.base_url)
         return f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def read_bearer_token(request: Request) -> str:
+    # the secret in the Authorization header, empty when there is none
+    header: str = request.headers.get("authorization", "")
+    return header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""

@@ -1,0 +1,34 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>{{ page.display_name }}</h1>
+        <p class="page-meta"><code>{{ page.username }}</code><span class="meta-separator">|</span>{% if page.is_local_account %}account of this server{% else %}logs in through {{ page.issuer }}{% endif %}</p>
+    </div>
+</div>
+<div class="panels">
+    <section class="panel">
+        <h2>Groups</h2>
+        {% if page.group_names %}
+        <div class="chips">{% for group_name in page.group_names %}<span class="chip">{{ group_name }}</span>{% endfor %}</div>
+        {% else %}
+        <p class="muted">You are in no group yet.</p>
+        {% endif %}
+    </section>
+    {% if page.can_change_password %}
+    <section class="panel">
+        <h2>Change password</h2>
+        {% if page.error_message %}<p class="alert alert-error" role="alert">{{ page.error_message }}</p>{% endif %}
+        {% if page.notice_message %}<p class="alert alert-notice" role="status">{{ page.notice_message }}</p>{% endif %}
+        <form method="post" action="/account/password" class="stack narrow">
+            <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+            <input type="hidden" name="username" value="{{ page.username }}" autocomplete="username">
+            <label class="field"><span>Present password</span><input name="current_password" type="password" autocomplete="current-password" required></label>
+            <label class="field"><span>New password</span><input name="new_password" type="password" autocomplete="new-password" required></label>
+            <label class="field"><span>New password again</span><input name="new_password_again" type="password" autocomplete="new-password" required></label>
+            <div><button class="button primary">Change password</button></div>
+        </form>
+    </section>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,18 @@
+{% for row in rows %}
+<tr>
+    <td><span class="name-cell"><span class="tile">{% include "icons/key.svg" %}</span>{{ row.key_name }}</span></td>
+    {% if show_owner %}<td><span class="name-stack"><span>{{ row.owner_display_name }}</span><span class="muted"><code>{{ row.owner_username }}</code>{% if row.is_owner_service_account %} · service account{% endif %}</span></span></td>{% endif %}
+    <td><code class="hash">{{ row.prefix }}…</code></td>
+    <td>{% with when = row.created_at %}{% include "time.html" %}{% endwith %}</td>
+    <td>{% if row.is_expired %}<span class="status"><i class="dot dot-red"></i>expired</span>{% elif row.expires_at %}{% with when = row.expires_at %}{% include "time.html" %}{% endwith %}{% else %}<span class="muted">never</span>{% endif %}</td>
+    <td>{% with when = row.last_used_at %}{% include "time.html" %}{% endwith %}</td>
+    <td class="actions">
+        <form method="post" action="/account/keys/{{ row.key_id }}/revoke">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <button class="button small danger">Revoke</button>
+        </form>
+    </td>
+</tr>
+{% else %}
+<tr><td colspan="{{ column_count }}" class="empty">{{ empty_text }}</td></tr>
+{% endfor %}

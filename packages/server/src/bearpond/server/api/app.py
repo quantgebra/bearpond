@@ -12,7 +12,7 @@ from starlette.status import (
 )
 
 from .. import repository, server as server_module, transaction, utils
-from .. import ui as ui_module
+from ..ui import pages
 from . import commits, dependencies, files, manifest, repos, transactions, version
 
 
@@ -34,8 +34,7 @@ app.include_router(commits.router)
 app.include_router(transactions.router)
 app.include_router(manifest.router)
 app.include_router(files.router)
-app.include_router(ui_module.router)
-ui_module.mount_ui(app)
+pages.mount_pages(app)
 
 
 # ----------------------------------------------------------------------------------------------------------------------

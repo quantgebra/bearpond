@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+{% block bare_content %}
+<section class="auth-card">
+    <p class="status-code">{{ page.status_code }}</p>
+    <h1>{{ shell.head.title }}</h1>
+    <p>{{ page.message }}</p>
+    <div class="row-actions">
+        <a class="button" href="/repositories">Repositories</a>
+        <a class="button" href="/login">Log in as someone else</a>
+    </div>
+</section>
+{% endblock %}

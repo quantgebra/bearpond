@@ -48,6 +48,20 @@ class GroupService:
         group.save(self._auth.session)
 
     # ------------------------------------------------------------------------------------------------------------------
+    def describe_group(self, requesting_actor: actor.Actor, group_name: str, description: str) -> None:
+        # says what a group is for, which the pages that pick a group show beside it
+        self._auth.require_admin(requesting_actor)
+
+        group: group_record.GroupRecord | None = group_record.GroupRecord.get_by_group_name(
+            self._auth.session, group_name
+        )
+        if group is None:
+            raise auth_error.AuthError("invalid_request", "There is no such group.")
+
+        group.description = description.strip()
+        group.save(self._auth.session)
+
+    # ------------------------------------------------------------------------------------------------------------------
     def delete_group(self, requesting_actor: actor.Actor, group_name: str) -> None:
         # removes a group that nothing depends on: no users in it, no provider groups mapped to it, no rule about it
         self._auth.require_admin(requesting_actor)

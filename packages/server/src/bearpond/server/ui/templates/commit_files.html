@@ -1,0 +1,13 @@
+{% if files %}
+<div class="section-header"><h2>{{ heading }}</h2><span class="muted">{{ files | length }}</span></div>
+<div class="table-card">
+    <table>
+        <thead><tr><th>Path</th><th class="number">Size</th><th>SHA-256</th></tr></thead>
+        <tbody>
+            {% for file in files %}
+            <tr><td><code class="path-code">{{ file.path }}</code></td><td class="number">{{ file.size_text }}</td><td><code class="hash" title="{{ file.sha256 }}">{{ file.short_sha256 }}</code></td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}

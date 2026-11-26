@@ -1,0 +1,25 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Commits</h1>
+        <p class="page-meta">{{ page.name }}<span class="meta-separator">|</span>newest first</p>
+    </div>
+</div>
+<div class="table-card">
+    <table>
+        <thead>
+            <tr><th class="number">Version</th><th>Message</th><th>Author</th><th>Changes</th><th>When</th><th>Hash</th></tr>
+        </thead>
+        <tbody>
+            {% with commits = page.commits %}{% include "commit_rows.html" %}{% endwith %}
+        </tbody>
+    </table>
+    {% if page.older_href or page.newest_href %}
+    <div class="table-footer">
+        {% if page.newest_href %}<a class="button" href="{{ page.newest_href }}">Newest</a>{% endif %}
+        {% if page.older_href %}<a class="button" href="{{ page.older_href }}">Older</a>{% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,101 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Users</h1>
+        <p class="page-meta">Accounts of this server, and the people who logged in through a provider</p>
+    </div>
+    <a class="button primary" href="#invite">{% include "icons/plus.svg" %}Invite someone</a>
+</div>
+{% if page.error_message %}<p class="alert alert-error" role="alert">{{ page.error_message }}</p>{% endif %}
+{% if page.link %}
+<div class="link-box" role="status">
+    <strong>Give this link to {{ page.link.recipient_text }}</strong>
+    <div class="copy-row"><input class="copy-field" value="{{ page.link.url }}" readonly data-select-on-focus><button type="button" class="button" data-copy>Copy</button></div>
+    <span class="muted">It works once, until {% with when = page.link.expires_at %}{% include "time.html" %}{% endwith %}. It is not shown again.</span>
+</div>
+{% endif %}
+<div class="table-card">
+    <table>
+        <thead>
+            <tr><th>User</th><th>Logs in with</th><th>Groups</th><th>Last login</th><th class="actions">Actions</th></tr>
+        </thead>
+        <tbody>
+            {% for row in page.rows %}
+            <tr>
+                <td>
+                    <span class="name-cell">
+                        <span class="avatar">{{ row.initials }}</span>
+                        <span class="name-stack">
+                            <span>{{ row.display_name }}{% if row.is_self %} <span class="muted">(you)</span>{% endif %}</span>
+                            <span class="muted"><code>{{ row.username }}</code></span>
+                        </span>
+                    </span>
+                </td>
+                <td>{{ row.issuer_text }}</td>
+                <td>
+                    <details class="picker">
+                        <summary>
+                            {% for group_name in row.group_names %}<span class="chip">{{ group_name }}</span>{% else %}<span class="muted">no group</span>{% endfor %}
+                            <span class="picker-edit">edit</span>
+                        </summary>
+                        <form method="post" action="/admin/users/{{ row.user_id }}/groups" class="picker-panel">
+                            <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                            {% for option in row.group_options %}
+                            <label class="check"><input type="checkbox" name="groups" value="{{ option.group_name }}"{% if option.is_selected %} checked{% endif %}>{{ option.group_name }}</label>
+                            {% endfor %}
+                            <button class="button primary">Save</button>
+                        </form>
+                    </details>
+                </td>
+                <td>{% with when = row.last_login_at %}{% include "time.html" %}{% endwith %}</td>
+                <td class="actions">
+                    <div class="row-buttons">
+                        {% if row.is_disabled %}<span class="status"><i class="dot dot-red"></i>disabled</span>{% elif row.is_service_account %}<span class="status"><i class="dot dot-blue"></i>service account</span>{% elif row.is_waiting_for_password %}<span class="status"><i class="dot dot-amber"></i>invited</span>{% else %}<span class="status"><i class="dot dot-green"></i>active</span>{% endif %}
+                        {% if row.is_local %}
+                        <form method="post" action="/admin/users/{{ row.user_id }}/reset">
+                            <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                            <button class="button small">New password link</button>
+                        </form>
+                        {% endif %}
+                        {% if row.is_disabled %}
+                        <form method="post" action="/admin/users/{{ row.user_id }}/enable">
+                            <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                            <button class="button small">Turn on</button>
+                        </form>
+                        {% elif not row.is_self %}
+                        <form method="post" action="/admin/users/{{ row.user_id }}/disable">
+                            <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                            <button class="button small danger">Turn off</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="empty">Nobody has logged in or been invited yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<section class="panel" id="invite">
+    <h2>Invite someone</h2>
+    <p class="muted">This makes an account of this server, and a link that the person chooses their password with.</p>
+    <form method="post" action="/admin/users/invite" class="form-grid">
+        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+        <label class="field"><span>User name</span><input name="username" required pattern="[a-z0-9][a-z0-9._\-]+" placeholder="jdoe"></label>
+        <label class="field"><span>Name to show</span><input name="display_name" placeholder="Jane Doe"></label>
+        <fieldset class="field">
+            <legend>Groups</legend>
+            <div class="checks">
+                {% for option in page.group_options %}
+                <label class="check"><input type="checkbox" name="groups" value="{{ option.group_name }}">{{ option.group_name }}</label>
+                {% else %}
+                <span class="muted">There are no groups yet.</span>
+                {% endfor %}
+            </div>
+        </fieldset>
+        <div><button class="button primary">Make an invitation link</button></div>
+    </form>
+</section>
+{% endblock %}

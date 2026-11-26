@@ -1,0 +1,12 @@
+{% for commit in commits %}
+<tr>
+    <td class="number"><a class="chip chip-link" href="{{ commit.href }}">#{{ commit.seq }}</a></td>
+    <td>{% if commit.reason %}{{ commit.reason }}{% else %}<span class="muted">no message</span>{% endif %}</td>
+    <td>{% if commit.user %}{{ commit.user }}{% else %}<span class="muted">unknown</span>{% endif %}</td>
+    <td class="changes"><span class="{% if commit.added_count %}added{% else %}muted{% endif %}">+{{ commit.added_count }}</span> <span class="{% if commit.removed_count %}removed{% else %}muted{% endif %}">−{{ commit.removed_count }}</span> <span class="{% if commit.updated_count %}updated{% else %}muted{% endif %}">~{{ commit.updated_count }}</span></td>
+    <td>{% with when = commit.committed_at %}{% include "time.html" %}{% endwith %}</td>
+    <td><code class="hash">{{ commit.short_commit_hash }}</code></td>
+</tr>
+{% else %}
+<tr><td colspan="6" class="empty">Nothing has been committed yet.</td></tr>
+{% endfor %}

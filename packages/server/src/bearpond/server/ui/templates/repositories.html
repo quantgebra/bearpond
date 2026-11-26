@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Repositories</h1>
+        <p class="page-meta">Total {{ page.repository_count }}<span class="meta-separator">|</span>{{ page.file_count }} files<span class="meta-separator">|</span>{{ page.size_text }}</p>
+    </div>
+</div>
+<div class="stats">
+    <div class="stat stat-lead"><span class="stat-label">Repositories</span><span class="stat-value">{{ page.repository_count }}</span></div>
+    <div class="stat"><span class="stat-label"><i class="dot dot-green"></i>Files</span><span class="stat-value">{{ page.file_count }}</span></div>
+    <div class="stat"><span class="stat-label"><i class="dot dot-blue"></i>Stored</span><span class="stat-value">{{ page.size_text }}</span></div>
+    <div class="stat"><span class="stat-label"><i class="dot dot-amber"></i>Last commit</span><span class="stat-value stat-value-small">{% with when = page.committed_at %}{% include "time.html" %}{% endwith %}</span></div>
+</div>
+<form class="toolbar" method="get" action="/repositories">
+    <label class="search">{% include "icons/search.svg" %}<input name="q" value="{{ page.query }}" placeholder="Search repositories" data-submit-on-input></label>
+</form>
+<div class="table-card">
+    <table>
+        <thead>
+            <tr><th>Repository</th><th class="number">Version</th><th class="number">Files</th><th class="number">Size</th><th>Last commit</th><th>Head</th></tr>
+        </thead>
+        <tbody>
+            {% for row in page.rows %}
+            <tr>
+                <td><a class="name-cell" href="{{ row.href }}"><span class="tile">{% include "icons/database.svg" %}</span>{{ row.name }}</a></td>
+                <td class="number"><span class="chip">#{{ row.seq }}</span></td>
+                <td class="number">{{ row.file_count }}</td>
+                <td class="number">{{ row.size_text }}</td>
+                <td>{% with when = row.committed_at %}{% include "time.html" %}{% endwith %}</td>
+                <td>{% if row.short_commit_hash %}<code class="hash">{{ row.short_commit_hash }}</code>{% else %}<span class="muted">none</span>{% endif %}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" class="empty">{% if page.query %}No repository has “{{ page.query }}” in its name.{% else %}There are no repositories yet. Make one with <code>bearpond repo-create SERVER/NAME</code>.{% endif %}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

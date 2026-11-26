@@ -27,6 +27,13 @@ pip install "quantgebra-auth[fastapi]"  # and the FastAPI integration
   never in the database and never shown again.
 - **Sessions.** A random secret in an `HttpOnly`, `SameSite=Lax` cookie, of which only a hash is stored. Anything that
   changes something needs the `Origin` of the service and the secret of the login in `X-CSRF-Token`.
+- **API keys and service accounts.** A script or CI sends a key as `Authorization: Bearer <key>` instead of logging
+  in. A key stands for a user and acts with the groups that an administrator gave that user (never ones a provider
+  sent, since there is no login); it needs no `X-CSRF-Token`, because a browser never sends it on its own. Every key
+  starts with the prefix the application sets in `AuthConfig` (BearPond's is `bp_`), only a hash of it is kept, it can
+  be made to expire, and revoking it takes effect at once. People make keys for themselves; administrators make them
+  for anyone, and make service accounts: users for programs, which have no password and cannot log in. These are in
+  `apikey/`, which uses only `core`.
 - **Groups and rules.** The groups are the service's own. What a provider calls a group is mapped to them, and
   administrators can put users in them too. Rules give a group permissions, optionally for one subject (write, for
   one repository). What a person may do is worked out on every request, so a change takes effect at once.
@@ -184,13 +191,12 @@ variables. `AuthTool` is the program for the person who runs the service (`creat
 core/    the entities and the schema, users, sessions, groups, grants, rules, settings; knows no way of logging in
 local/   passwords, invitations and the first administrator; uses core
 oidc/    providers, their secrets, and logging in through them; uses core
+apikey/  api keys and service accounts; uses core
 http/    FastAPI cookies, the gate and the endpoints; uses all of them
 ```
 
 ## Not yet
 
-- Tokens for scripts and services, so that a command line or a batch job can authenticate without a browser.
-- The pages for administrators (users, groups, rules, providers); the services behind them are here.
 - Groups that the service makes for what it holds, such as one for each repository.
 
 ## License

@@ -42,11 +42,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Frontend build artifacts and dependencies
-web/node_modules/
-web/dist/
-packages/server/src/bearpond/server/static/
-
 # personal machine-local symlinks to ~/.agents/AGENTS.py.md — not portable across machines/clones
 /AGENTS.md
 /CLAUDE.md

@@ -1,5 +1,6 @@
 from sqlalchemy import orm
 
+from .apikey import api_key_authentication
 from .core import auth_config
 from .core import auth_service
 from .core import auth_settings_service
@@ -47,3 +48,6 @@ class AuthServices:
         self.oidc_settings: oidc_settings.OidcSettings = oidc_settings.OidcSettings(self.auth, secrets, providers)
         self.providers: oidc_providers.OidcProviders = providers
         self.pending_logins: pending_logins.PendingLogins = pending
+        self.api_keys: api_key_authentication.ApiKeyAuthentication = api_key_authentication.ApiKeyAuthentication(
+            self.auth
+        )

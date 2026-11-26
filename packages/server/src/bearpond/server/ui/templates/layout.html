@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ shell.head.title }} · BearPond</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <script src="/static/theme.js"></script>
+    <script type="module" src="/static/live.js"></script>
+</head>
+{% if shell.head.is_bare %}
+<body class="is-bare">
+<main class="bare">
+    <header class="bare-header">
+        {% include "brand.html" %}
+        <button type="button" class="icon-button" data-theme-toggle title="Switch between light and dark">{% include "icons/theme.svg" %}</button>
+    </header>
+    {% block bare_content %}{% endblock %}
+</main>
+</body>
+{% else %}
+<body>
+<div class="app">
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">{% include "brand.html" %}</div>
+        <nav class="sidebar-nav" aria-label="Main">
+            {% for group in shell.menu_groups %}
+            <div class="nav-group">
+                <div class="nav-heading">{{ group.heading }}</div>
+                {% for entry in group.entries %}
+                <a href="{{ entry.href }}"{% if entry.is_current %} class="current" aria-current="page"{% endif %}>{% include "icons/" ~ entry.icon_name ~ ".svg" %}<span>{{ entry.label }}</span></a>
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </nav>
+        {% if shell.head.user %}
+        <div class="sidebar-footer">
+            <span class="avatar" aria-hidden="true">{{ shell.head.user.initials }}</span>
+            <div class="user-meta">
+                <span class="user-name">{{ shell.head.user.display_name }}</span>
+                {% if shell.head.user.is_development %}
+                <span class="user-note">development mode</span>
+                {% elif shell.head.user.is_administrator %}
+                <span class="user-note">administrator</span>
+                {% endif %}
+            </div>
+            {% if not shell.head.user.is_development %}
+            <form method="post" action="/logout">
+                <input type="hidden" name="_csrf" value="{{ shell.head.user.csrf_token }}">
+                <button class="icon-button" title="Log out">{% include "icons/logout.svg" %}</button>
+            </form>
+            {% endif %}
+        </div>
+        {% endif %}
+    </aside>
+    <div class="workspace">
+        <header class="topbar">
+            <button type="button" class="icon-button" data-sidebar-toggle title="Show or hide the menu">{% include "icons/panel.svg" %}</button>
+            <nav class="crumbs" aria-label="Breadcrumb">
+                {% for crumb in shell.head.crumbs %}
+                {% if crumb.href %}<a href="{{ crumb.href }}">{{ crumb.label }}</a>{% elif loop.last %}<span class="crumb-current">{{ crumb.label }}</span>{% else %}<span>{{ crumb.label }}</span>{% endif %}{% if not loop.last %}<span class="crumb-separator">›</span>{% endif %}
+                {% endfor %}
+            </nav>
+            <div class="topbar-actions">
+                <button type="button" class="icon-button" data-theme-toggle title="Switch between light and dark">{% include "icons/theme.svg" %}</button>
+            </div>
+        </header>
+        <main class="content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</div>
+</body>
+{% endif %}
+</html>

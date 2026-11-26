@@ -1,0 +1,36 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>{% if page.reason %}{{ page.reason }}{% else %}Commit #{{ page.seq }}{% endif %}</h1>
+        <p class="page-meta">#{{ page.seq }}<span class="meta-separator">|</span>{% if page.user %}{{ page.user }}{% else %}unknown author{% endif %}<span class="meta-separator">|</span>{% with when = page.committed_at %}{% include "time.html" %}{% endwith %}</p>
+    </div>
+</div>
+<div class="stats">
+    <div class="stat"><span class="stat-label"><i class="dot dot-green"></i>Added</span><span class="stat-value">{{ page.added | length }}</span></div>
+    <div class="stat"><span class="stat-label"><i class="dot dot-red"></i>Removed</span><span class="stat-value">{{ page.removed | length }}</span></div>
+    <div class="stat"><span class="stat-label"><i class="dot dot-amber"></i>Changed</span><span class="stat-value">{{ page.updated | length }}</span></div>
+</div>
+<section class="panel">
+    <dl class="facts">
+        <dt>Commit hash</dt><dd><code>{{ page.commit_hash }}</code></dd>
+        <dt>Parent</dt><dd>{% if page.parent_commit_hash %}<a href="{{ page.parent_href }}"><code>{{ page.parent_commit_hash }}</code></a>{% else %}<span class="muted">none, this is the first commit</span>{% endif %}</dd>
+        <dt>Transaction</dt><dd><code>{{ page.txn_uuid }}</code></dd>
+    </dl>
+</section>
+{% with heading = "Added", files = page.added %}{% include "commit_files.html" %}{% endwith %}
+{% with heading = "Removed", files = page.removed %}{% include "commit_files.html" %}{% endwith %}
+{% if page.updated %}
+<div class="section-header"><h2>Changed</h2><span class="muted">{{ page.updated | length }}</span></div>
+<div class="table-card">
+    <table>
+        <thead><tr><th>Path</th><th class="number">Was</th><th class="number">Is</th><th>SHA-256</th></tr></thead>
+        <tbody>
+            {% for file in page.updated %}
+            <tr><td><code class="path-code">{{ file.path }}</code></td><td class="number">{{ file.old_size_text }}</td><td class="number">{{ file.new_size_text }}</td><td><code class="hash">{{ file.old_short_sha256 }}</code> → <code class="hash">{{ file.new_short_sha256 }}</code></td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

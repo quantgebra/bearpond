@@ -25,6 +25,8 @@ PERMISSION_WRITE: str = "write"
 PERMISSION_ADMIN: str = "admin"
 SUBJECT_KIND_REPOSITORY: str = "repository"
 ADMINISTRATORS_GROUP: str = "administrators"
+# what BearPond's api keys start with, so a leaked one is easy to recognize
+API_KEY_PREFIX: str = "bp_"
 SESSION_COOKIE_NAME: str = "bearpond_session"
 
 
@@ -96,6 +98,7 @@ class ServerAuth:
             settings.session_duration_minutes,
             True,
             ServerAuth.make_default_rules(),
+            API_KEY_PREFIX,
         )
 
         # users and logins live in the database of the server, which hands the library a session of it for every

@@ -1,0 +1,79 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>API keys</h1>
+        <p class="page-meta">For scripts, the <code>bearpond</code> command line and CI, which get in without logging in</p>
+    </div>
+</div>
+{% if page.error_message %}<p class="alert alert-error" role="alert">{{ page.error_message }}</p>{% endif %}
+{% if page.notice_message %}<p class="alert alert-notice" role="status">{{ page.notice_message }}</p>{% endif %}
+{% if page.is_unavailable %}
+<section class="panel">
+    <p class="muted">There are no API keys while the server lets everyone in: nobody logs in, so there is nobody for a key to stand for. Set <code>auth.mode</code> to <code>enforced</code> in <code>server.yaml</code> to use them.</p>
+</section>
+{% else %}
+{% if page.new_key %}
+<div class="link-box" role="status">
+    <strong>The key “{{ page.new_key.key_name }}” was made. Copy it now</strong>
+    <div class="copy-row"><input class="copy-field" value="{{ page.new_key.token }}" readonly data-select-on-focus><button type="button" class="button" data-copy>Copy</button></div>
+    <span class="muted">It is not shown again, and the server keeps no copy that could show it.</span>
+</div>
+{% endif %}
+<section class="panel">
+    <h2>Using a key</h2>
+    <p class="muted">A key acts as the user it was made for, with the groups that an administrator gave that user. Give it to the command line in <code>BEARPOND_TOKEN</code> or <code>--token</code>, or send it in the <code>Authorization</code> header. Revoke it here at once if it leaks.</p>
+    <pre class="code-block">export BEARPOND_TOKEN=bp_…
+bearpond clone {{ page.base_url }}/REPO
+
+curl -H "Authorization: Bearer bp_…" {{ page.base_url }}/repos</pre>
+</section>
+<div class="section-header"><h2>Your keys</h2></div>
+<div class="table-card">
+    <table>
+        <thead><tr><th>Name</th><th>Starts with</th><th>Made</th><th>Expires</th><th>Last used</th><th class="actions"></th></tr></thead>
+        <tbody>
+            {% with rows = page.own_rows, show_owner = false, csrf_token = page.csrf_token, column_count = 6, empty_text = "You have no keys." %}{% include "key_rows.html" %}{% endwith %}
+        </tbody>
+    </table>
+    <form method="post" action="/account/keys" class="table-form{% if page.is_administrator %} with-owner{% endif %}">
+        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+        <label class="field"><span>What it is for</span><input name="key_name" required maxlength="64" placeholder="ci-main"></label>
+        <label class="field"><span>Days until it stops working</span><input name="expires_in_days" type="number" min="1" max="3650" placeholder="never"></label>
+        {% if page.is_administrator %}
+        <label class="field"><span>It acts as</span><select name="user_id">{% for option in page.owner_options %}<option value="{{ option.user_id }}"{% if option.is_selected %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label>
+        {% endif %}
+        <button class="button primary">Make a key</button>
+    </form>
+</div>
+{% if page.is_administrator %}
+<div class="section-header"><h2>Every key</h2></div>
+<div class="table-card">
+    <table>
+        <thead><tr><th>Name</th><th>Acts as</th><th>Starts with</th><th>Made</th><th>Expires</th><th>Last used</th><th class="actions"></th></tr></thead>
+        <tbody>
+            {% with rows = page.all_rows, show_owner = true, csrf_token = page.csrf_token, column_count = 7, empty_text = "There are no keys." %}{% include "key_rows.html" %}{% endwith %}
+        </tbody>
+    </table>
+</div>
+<section class="panel">
+    <h2>Make a service account</h2>
+    <p class="muted">A user for a program, such as CI. It has no password and cannot log in: it is reached with the keys that are made for it, and may do what its groups may.</p>
+    <form method="post" action="/account/keys/service-accounts" class="form-grid">
+        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+        <label class="field"><span>User name</span><input name="username" required pattern="[a-z0-9][a-z0-9._\-]+" placeholder="ci"></label>
+        <label class="field"><span>Name to show</span><input name="display_name" placeholder="Nightly ETL"></label>
+        <fieldset class="field">
+            <legend>Groups</legend>
+            <div class="checks">
+                {% for option in page.group_options %}
+                <label class="check"><input type="checkbox" name="groups" value="{{ option.group_name }}">{{ option.group_name }}</label>
+                {% endfor %}
+            </div>
+        </fieldset>
+        <div><button class="button primary">Make the service account</button></div>
+    </form>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

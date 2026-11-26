@@ -1,0 +1,27 @@
+{% extends "layout.html" %}
+{% block bare_content %}
+<section class="auth-card">
+    <h1>Log in</h1>
+    <p class="muted">to the data lake</p>
+    {% if page.error_message %}<p class="alert alert-error" role="alert">{{ page.error_message }}</p>{% endif %}
+    {% if page.is_local_enabled %}
+    <form method="post" action="/login" class="stack">
+        <input type="hidden" name="next" value="{{ page.next_path }}">
+        <label class="field"><span>User name</span><input name="username" value="{{ page.username }}" autocomplete="username" autofocus required></label>
+        <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="button primary wide">Log in</button>
+    </form>
+    {% endif %}
+    {% if page.providers %}
+    {% if page.is_local_enabled %}<div class="divider"><span>or</span></div>{% endif %}
+    <div class="stack">
+        {% for provider in page.providers %}
+        <a class="button wide" href="{{ provider.href }}">Continue with {{ provider.label }}</a>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% if not page.is_local_enabled and not page.providers %}
+    <p class="muted">There is no way to log in yet. An administrator has to set one up.</p>
+    {% endif %}
+</section>
+{% endblock %}

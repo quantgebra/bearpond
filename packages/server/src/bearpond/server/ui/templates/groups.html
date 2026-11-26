@@ -1,0 +1,102 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Groups</h1>
+        <p class="page-meta">People are put in groups, and rules on the <a class="text-link" href="/admin/access">Access</a> page give groups permissions</p>
+    </div>
+    <a class="button primary" href="#add-group">{% include "icons/plus.svg" %}Add a group</a>
+</div>
+{% if page.error_message %}<p class="alert alert-error" role="alert">{{ page.error_message }}</p>{% endif %}
+<div class="table-card">
+    <table>
+        <thead>
+            <tr><th>Group</th><th>Description</th><th class="number">Users</th><th class="number">Rules</th><th>Mapped from</th><th class="actions"></th></tr>
+        </thead>
+        <tbody>
+            {% for row in page.rows %}
+            <tr>
+                <td><span class="name-cell"><span class="tile">{% include "icons/groups.svg" %}</span>{{ row.group_name }}</span></td>
+                <td>
+                    <form method="post" action="/admin/groups/{{ row.group_name }}/describe" class="inline-edit">
+                        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                        <input name="description" value="{{ row.description }}" placeholder="what the group is for" aria-label="Description of {{ row.group_name }}">
+                        <button class="button small">Save</button>
+                    </form>
+                </td>
+                <td class="number">{{ row.member_count }}</td>
+                <td class="number">{{ row.rule_count }}</td>
+                <td>
+                    {% for mapping in row.mapped_from %}
+                    <form method="post" action="/admin/groups/unmap" class="mapping">
+                        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                        <input type="hidden" name="provider_name" value="{{ mapping.provider_name }}">
+                        <input type="hidden" name="provider_group_name" value="{{ mapping.provider_group_name }}">
+                        <input type="hidden" name="group_name" value="{{ mapping.group_name }}">
+                        <span class="chip">{{ mapping.provider_name }}: {{ mapping.provider_group_name }}<button class="chip-remove" title="Unmap">×</button></span>
+                    </form>
+                    {% else %}
+                    <span class="muted">none</span>
+                    {% endfor %}
+                </td>
+                <td class="actions">
+                    {% if row.is_removable %}
+                    <form method="post" action="/admin/groups/{{ row.group_name }}/delete">
+                        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                        <button class="button small danger">Remove</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" class="empty">There are no groups yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<div class="panels two">
+    <section class="panel" id="add-group">
+        <h2>Add a group</h2>
+        <form method="post" action="/admin/groups" class="stack">
+            <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+            <label class="field"><span>Name</span><input name="group_name" required pattern="[A-Za-z0-9._:\-]+" maxlength="64" placeholder="research"></label>
+            <label class="field"><span>Description</span><input name="description" placeholder="what the group is for"></label>
+            <div><button class="button primary">Add the group</button></div>
+        </form>
+    </section>
+    <section class="panel">
+        <h2>Map a provider's group</h2>
+        {% if page.provider_names %}
+        <p class="muted">What a provider calls a group becomes a group here, so the rules for it apply whichever way people log in.</p>
+        <form method="post" action="/admin/groups/map" class="stack">
+            <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+            <label class="field"><span>Provider</span><select name="provider_name">{% for provider_name in page.provider_names %}<option>{{ provider_name }}</option>{% endfor %}</select></label>
+            <label class="field"><span>Its group</span><input name="provider_group_name" required list="seen-groups" placeholder="what the provider calls it"></label>
+            <datalist id="seen-groups">{% for provider_group in page.provider_group_rows %}<option value="{{ provider_group.provider_group_name }}">{% endfor %}</datalist>
+            <label class="field"><span>Is the group</span><select name="group_name">{% for group_name in page.group_names %}<option>{{ group_name }}</option>{% endfor %}</select></label>
+            <div><button class="button primary">Map it</button></div>
+        </form>
+        {% else %}
+        <p class="muted">There is no OIDC provider. Add one on the <a class="text-link" href="/admin/access">Access</a> page; until then people log in with accounts of this server and are put in groups on the <a class="text-link" href="/admin/users">Users</a> page.</p>
+        {% endif %}
+    </section>
+</div>
+{% if page.provider_group_rows %}
+<div class="section-header"><h2>Groups that providers sent</h2></div>
+<div class="table-card">
+    <table>
+        <thead><tr><th>Provider</th><th>Group</th><th>Last seen in a login</th><th>Mapped to</th></tr></thead>
+        <tbody>
+            {% for provider_group in page.provider_group_rows %}
+            <tr>
+                <td>{{ provider_group.provider_name }}</td>
+                <td><code>{{ provider_group.provider_group_name }}</code></td>
+                <td>{% with when = provider_group.seen_at %}{% include "time.html" %}{% endwith %}</td>
+                <td>{% if provider_group.mapped_to_text %}{{ provider_group.mapped_to_text }}{% else %}<span class="status"><i class="dot dot-amber"></i>not mapped</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

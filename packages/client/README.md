@@ -86,7 +86,14 @@ Switching queries or `--seq` requires a clean workspace — no in-progress pull 
 
 Hive-style `key=value` directories are the most useful convention for subset pulls, but they are not required.
 
-**Auth:** the server checks a bearer token when `BEARPOND_TOKEN` is set (unset = open, for local use). The CLI reads the same variable. Whoever sends the token is an administrator of the server; logging in as a person from the command line is on the roadmap.
+**Logging in.** On a server that makes people log in, make an API key on its **API keys** page (`/account/keys`; it starts with `bp_` and may do what you may), then save it for that server:
+
+```bash
+bearpond login http://localhost:8000      # asks for the key without showing it; or --token bp_…, or pipe it in
+bearpond logout http://localhost:8000     # forgets the saved key (revoke it on the server to stop it working)
+```
+
+`login` checks the key against the server before saving it, in `~/.config/bearpond/credentials`: a JSON file with one key per server address, readable only by you (mode 600, in a folder of mode 700). Every command that talks to a server sends, in this order: `--token`, then `$BEARPOND_TOKEN`, then the key saved for the workspace's server. CI usually sets `BEARPOND_TOKEN` to a service account's key. A server can also be run with one shared token, in `BEARPOND_TOKEN` on both sides, whose holder is an administrator.
 
 
 ## More

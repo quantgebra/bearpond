@@ -7,6 +7,10 @@ from . import grant_rule
 from . import permission_definition_catalog
 
 LOCAL_NAME: str = "local"
+# the issuer of service accounts: users for programs, which have no password and are only reached with api keys
+SERVICE_NAME: str = "service"
+# what an actor made from an api key logged in with, since there is no provider and no login
+API_KEY_NAME: str = "api-key"
 
 
 # ======================================================================================================================
@@ -44,6 +48,7 @@ class AuthConfig:
         session_duration_minutes: int,
         is_local_enabled: bool,
         rules: list[grant_rule.GrantRule],
+        api_key_prefix: str = "key_",
     ) -> None:
         self.mode: Literal["none", "enforced"] = mode
         self.base_url: str = base_url
@@ -52,6 +57,10 @@ class AuthConfig:
         self.session_duration_minutes: int = session_duration_minutes
         self.is_local_enabled: bool = is_local_enabled
         self.rules: list[grant_rule.GrantRule] = rules
+
+        # what every api key of the application starts with, so a leaked one is told apart from a cookie and found by a
+        # scanner of secrets, such as "bp_" for BearPond
+        self.api_key_prefix: str = api_key_prefix
 
     # ------------------------------------------------------------------------------------------------------------------
     def with_settings(self, settings: StoredAuthSettings, rules: list[grant_rule.GrantRule]) -> "AuthConfig":
@@ -64,6 +73,7 @@ class AuthConfig:
             settings.session_duration_minutes,
             settings.is_local_enabled,
             rules,
+            self.api_key_prefix,
         )
         return result
 

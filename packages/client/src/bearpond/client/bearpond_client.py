@@ -168,6 +168,11 @@ class BearpondClient:
         self.workdir: Path = workdir
 
     # ------------------------------------------------------------------------------------------------------------------
+    def get_server_url(self) -> str:
+        # the server this workspace was cloned from, which is what a saved key is looked up by
+        return self._load_config().server
+
+    # ------------------------------------------------------------------------------------------------------------------
     def connect(self, token: str | None = None) -> server_client.ServerClient:
         # a ServerClient bound to the remote this workspace was cloned from
         config: WorkspaceConfig = self._load_config()

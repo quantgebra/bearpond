@@ -1,0 +1,62 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>{{ page.name }}</h1>
+        <p class="page-meta">Version #{{ page.seq }}<span class="meta-separator">|</span>{{ page.file_count }} files<span class="meta-separator">|</span>{{ page.size_text }}</p>
+    </div>
+    <a class="button" href="{{ page.commits_href }}">{% include "icons/commit.svg" %}History</a>
+</div>
+<div class="stats">
+    <div class="stat stat-lead"><span class="stat-label">Version</span><span class="stat-value">#{{ page.seq }}</span></div>
+    <div class="stat"><span class="stat-label"><i class="dot dot-green"></i>Files</span><span class="stat-value">{{ page.file_count }}</span></div>
+    <div class="stat"><span class="stat-label"><i class="dot dot-blue"></i>Stored</span><span class="stat-value">{{ page.size_text }}</span></div>
+    <div class="stat"><span class="stat-label"><i class="dot dot-amber"></i>Last commit</span><span class="stat-value stat-value-small">{% with when = page.committed_at %}{% include "time.html" %}{% endwith %}</span></div>
+</div>
+<div class="section-header">
+    <nav class="path" aria-label="Directory">
+        {% for crumb in page.path_crumbs %}{% if not loop.first %}<span class="path-separator">/</span>{% endif %}<a href="{{ crumb.href }}">{{ crumb.label }}</a>{% endfor %}
+    </nav>
+</div>
+<div class="table-card">
+    <table>
+        <thead>
+            <tr><th>Name</th><th class="number">Size</th><th>SHA-256</th><th class="actions"></th></tr>
+        </thead>
+        <tbody>
+            {% for directory in page.directories %}
+            <tr>
+                <td><a class="name-cell" href="{{ directory.href }}"><span class="tile">{% include "icons/folder.svg" %}</span>{{ directory.name }}/</a></td>
+                <td class="number muted">—</td><td></td><td></td>
+            </tr>
+            {% endfor %}
+            {% for file in page.files %}
+            <tr>
+                <td><span class="name-cell"><span class="tile">{% include "icons/file.svg" %}</span>{{ file.name }}</span></td>
+                <td class="number">{{ file.size_text }}</td>
+                <td><code class="hash" title="{{ file.sha256 }}">{{ file.short_sha256 }}</code></td>
+                <td class="actions"><a class="icon-button" href="{{ file.download_href }}" title="Download {{ file.path }}" download>{% include "icons/download.svg" %}</a></td>
+            </tr>
+            {% endfor %}
+            {% if not page.directories and not page.files %}
+            <tr><td colspan="4" class="empty">This repository has no files yet.</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+    {% if page.next_page_href %}<div class="table-footer"><a class="button" href="{{ page.next_page_href }}">More files</a></div>{% endif %}
+</div>
+<div class="section-header">
+    <h2>Latest commits</h2>
+    <a href="{{ page.commits_href }}">All commits</a>
+</div>
+<div class="table-card">
+    <table>
+        <thead>
+            <tr><th class="number">Version</th><th>Message</th><th>Author</th><th>Changes</th><th>When</th><th>Hash</th></tr>
+        </thead>
+        <tbody>
+            {% with commits = page.recent_commits %}{% include "commit_rows.html" %}{% endwith %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

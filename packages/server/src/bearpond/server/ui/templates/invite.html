@@ -1,0 +1,18 @@
+{% extends "layout.html" %}
+{% block bare_content %}
+<section class="auth-card">
+    {% if page.is_reset %}
+    <h1>Choose a new password</h1>
+    {% else %}
+    <h1>Welcome, {{ page.display_name }}</h1>
+    {% endif %}
+    <p class="muted">for the account <code>{{ page.username }}</code></p>
+    {% if page.error_message %}<p class="alert alert-error" role="alert">{{ page.error_message }}</p>{% endif %}
+    <form method="post" action="/invite/{{ page.token }}" class="stack">
+        <input type="hidden" name="username" value="{{ page.username }}" autocomplete="username">
+        <label class="field"><span>Password</span><input name="password" type="password" autocomplete="new-password" autofocus required></label>
+        <label class="field"><span>Password again</span><input name="password_again" type="password" autocomplete="new-password" required></label>
+        <button class="button primary wide">{% if page.is_reset %}Change password{% else %}Create account{% endif %}</button>
+    </form>
+</section>
+{% endblock %}

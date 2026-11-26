@@ -1,0 +1,93 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Access</h1>
+        <p class="page-meta">How people log in, and what each group may do. A change that would leave nobody able to administer is refused.</p>
+    </div>
+</div>
+{% if page.error_message %}<p class="alert alert-error" role="alert">{{ page.error_message }}</p>{% endif %}
+{% if page.notice_message %}<p class="alert alert-notice" role="status">{{ page.notice_message }}</p>{% endif %}
+{% for dangling_text in page.dangling_texts %}<p class="alert alert-warning">{{ dangling_text }}</p>{% endfor %}
+
+<div class="section-header"><h2>Rules</h2></div>
+<div class="table-card">
+    <table>
+        <thead><tr><th>Group</th><th>May</th><th>Repository</th><th class="actions"></th></tr></thead>
+        <tbody>
+            {% for row in page.rule_rows %}
+            <tr>
+                <td><span class="name-cell"><span class="tile">{% include "icons/groups.svg" %}</span>{{ row.group_name }}</span></td>
+                <td><span class="chip">{{ row.permission_label }}</span></td>
+                <td>{% if row.repo_name %}<a href="/repositories/{{ row.repo_name }}">{{ row.repo_name }}</a>{% else %}<span class="muted">every repository</span>{% endif %}</td>
+                <td class="actions">
+                    <form method="post" action="/admin/access/rules/delete">
+                        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                        <input type="hidden" name="rule_index" value="{{ row.rule_index }}">
+                        <input type="hidden" name="grant_index" value="{{ row.grant_index }}">
+                        <button class="button small danger">Remove</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="empty">No rules: nobody may do anything.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <form method="post" action="/admin/access/rules" class="table-form">
+        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+        <label class="field"><span>Group</span><select name="group_name">{% for group_name in page.group_names %}<option>{{ group_name }}</option>{% endfor %}</select></label>
+        <label class="field"><span>May</span><select name="permission_name">{% for permission in page.permission_options %}<option value="{{ permission.name }}" title="{{ permission.description }}">{{ permission.label }}{% if not permission.is_per_repository %} (everything){% endif %}</option>{% endfor %}</select></label>
+        <label class="field"><span>Repository</span><select name="repo_name"><option value="">every repository</option>{% for repo_name in page.repo_names %}<option>{{ repo_name }}</option>{% endfor %}</select></label>
+        <button class="button primary">Add the rule</button>
+    </form>
+</div>
+<ul class="hints">
+    {% for permission in page.permission_options %}<li><strong>{{ permission.label }}</strong>: {{ permission.description }}</li>{% endfor %}
+</ul>
+
+<div class="section-header">
+    <h2>OIDC providers</h2>
+    <a class="button" href="/admin/access/providers/new">{% include "icons/plus.svg" %}Add a provider</a>
+</div>
+<div class="table-card">
+    <table>
+        <thead><tr><th>Provider</th><th>Issuer</th><th>Secret</th><th class="actions"></th></tr></thead>
+        <tbody>
+            {% for provider in page.provider_rows %}
+            <tr>
+                <td><a class="name-cell" href="{{ provider.edit_href }}"><span class="tile">{% include "icons/shield.svg" %}</span><span class="name-stack"><span>{{ provider.label }}</span><span class="muted">{{ provider.provider_name }}</span></span></a></td>
+                <td><code>{{ provider.issuer }}</code><div class="muted">client {{ provider.client_id }}</div></td>
+                <td>{% if provider.is_secret_present %}<span class="status"><i class="dot dot-green"></i>stored</span>{% else %}<span class="status"><i class="dot dot-red"></i>missing</span>{% endif %}</td>
+                <td class="actions">
+                    <div class="row-buttons">
+                        <a class="button small" href="{{ provider.edit_href }}">Edit</a>
+                        <form method="post" action="{{ provider.action_path }}/check">
+                            <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                            <button class="button small">Try it</button>
+                        </form>
+                        <form method="post" action="{{ provider.action_path }}/delete">
+                            <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+                            <button class="button small danger">Remove</button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="empty">No provider: people log in with accounts of this server.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<section class="panel">
+    <h2>Logging in</h2>
+    <p class="muted">The server is reached at <code>{{ page.base_url }}</code> and its mode is <code>{{ page.mode }}</code>. Both come from <code>server.yaml</code>, not from this page, because a wrong address would also refuse the form that corrects it.</p>
+    <form method="post" action="/admin/access/settings" class="form-grid">
+        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+        <label class="field"><span>Minutes that a login lasts</span><input name="session_duration_minutes" type="number" min="1" max="43200" value="{{ page.session_duration_minutes }}" required></label>
+        <label class="check"><input type="checkbox" name="is_local_enabled"{% if page.is_local_enabled %} checked{% endif %}>People can log in with an account of this server</label>
+        <div><button class="button primary">Save</button></div>
+    </form>
+</section>
+{% endblock %}

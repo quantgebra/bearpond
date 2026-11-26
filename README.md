@@ -20,7 +20,8 @@ bearpond is built for a small team with central data: a handful of ETL processes
 - **Versioned manifests.** Every commit produces a manifest — the full list of files in the lake at that version. The metadata store is the source of truth; any seq can be reconstructed on demand. Clients read the manifest, never directory listings, and can verify every byte they download.
 - **Git-style commit chain.** Each commit record carries a `commit_hash` computed over the change, its parent, its timestamp, and its author — so the history is self-certifying and tamper-evident.
 - **Safe pull.** `bearpond pull` maintains a local mirror of the lake in hive-partition layout, fetching only what changed and pruning what was removed — ready for pandas, Polars, DuckDB, or any data tool. Subset pulls let a workspace track only the partitions it needs.
-- **Web UI.** A React interface for browsing repositories, manifests, and commit history is served by the same FastAPI process.
+- **Web UI.** Pages made on the server, one at a time, by the same FastAPI process: log in, browse each repository's directories and files, and read its commit history, down to what each commit changed. No JavaScript build and no single-page app.
+- **Users, groups and API keys.** Local accounts and OIDC logins (Authentik, Auth0, Keycloak, ...), groups with read, write or admin rules for every repository or one, and API keys for scripts and CI, including service accounts that cannot log in. All of it is managed in the web UI.
 - **Crash-safe by construction.** Immutable objects plus an atomic metadata commit mean a crash at any point leaves the lake either exactly on a version or cleanly retryable. Objects are placed directly in the content-addressed store during upload, so there is no staging state to reconcile on startup.
 
 ## Why bearpond — and the alternatives
@@ -68,6 +69,7 @@ pip install bearpond-server     # the server, a separate distribution
 export BEARPOND_CONFIG_DIR=/path/to/config          # holds server.yaml
 uvicorn bearpond.server.api.app:app --port 8000
 
+bearpond login http://localhost:8000      # only when the server makes people log in: paste an API key
 bearpond repo-create http://localhost:8000/trades
 bearpond clone http://localhost:8000/trades ./trades
 cd trades
@@ -106,9 +108,8 @@ Layout of this repo:
 ```
 packages/
   protocol/src/bearpond/protocol/  # the wire protocol shared by server and client (bearpond-protocol on PyPI)
-  server/src/bearpond/server/      # FastAPI app, repository, transaction, metadata store, object store, static UI files (bearpond-server)
+  server/src/bearpond/server/      # FastAPI app, repository, transaction, metadata store, object store, web pages (bearpond-server)
   client/src/bearpond/client/      # workspace client + CLI (add/rm/commit/pull/revert/status) (bearpond)
-web/                  # React + TypeScript web UI source (Vite)
 tests/                # pytest suite (domain, API, client end-to-end) — spans all three packages
 ```
 
@@ -119,29 +120,14 @@ pip install -e packages/protocol -e "packages/server[dev]" -e "packages/client[d
 python -m pytest        # 130 tests: domain, API over live HTTP, end-to-end client flows
 ```
 
-The web UI lives in `web/` and uses Vite + React + TypeScript. To work on it:
-
-```bash
-cd web
-npm install
-npm run dev             # serves the UI on http://localhost:5173 with API proxy to :8000
-```
-
-Build it before packaging or testing the served version:
-
-```bash
-cd web
-npm run build           # outputs to packages/server/src/bearpond/server/static/
-```
+The web UI is in `packages/server/src/bearpond/server/ui/`. Each group of pages is a `PageResource` subclass (`RepositoriesPage`, `LoginPage`, ...) whose routes read what a page shows and pass it as a pydantic model to a [Jinja2](https://jinja.palletsprojects.com) template in `ui/templates/`. Every page template extends `layout.html`, which draws the sidebar and the top bar. Templates hold no logic beyond loops and flags that the model sets, and they escape everything they are given. `ui/static/` holds the one stylesheet and two small scripts: `theme.js` sets the light or dark theme before the page is drawn, and `live.js` shows times in the viewer's time zone, toggles the theme and the menu, and runs the search as you type. The pages work without JavaScript. There is nothing to build: Jinja2 reads a template again when it changes, so editing one and reloading the page is enough.
 
 ## Roadmap
 
-- **Logging in from the command line** — per-user tokens and service accounts for scripts, and a login page in the web UI (the server already has users, groups, read/write/admin permissions and OIDC; the CLI still sends one shared bearer token)
 - **Garbage collection** — reclaim objects no longer referenced by any retained version
 - **Retention policies** — how long removed content stays recoverable
 - **Compaction** — combine smaller files into larger ones by adding new aggregate paths and removing the now-redundant small ones
 - **Pluggable backends** — Postgres metadata store and S3 object store for stateless HA
-- **Web UI administration** — admin and user management in the web UI (browsing repositories, manifests, and commit history already ships)
 
 ## License
 

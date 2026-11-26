@@ -17,6 +17,7 @@ _MIGRATIONS_PATH: Path = Path(__file__).resolve().parent.parent / "migrations"
 # ----------------------------------------------------------------------------------------------------------------------
 def get_metadata() -> sqlalchemy.MetaData:
     # every table of authentication is registered once the modules that define them have been imported
+    from ..apikey import api_key_record  # noqa: F401
     from ..local import invite_record, local_credential_record  # noqa: F401
     from ..oidc import oidc_provider_record  # noqa: F401
     from . import (  # noqa: F401

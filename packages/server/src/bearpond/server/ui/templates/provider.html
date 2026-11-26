@@ -1,0 +1,40 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>{% if page.is_new %}Add an OIDC provider{% else %}{{ page.label }}{% endif %}</h1>
+        <p class="page-meta">Found through <code>&lt;issuer&gt;/.well-known/openid-configuration</code>; the login uses the code flow with PKCE</p>
+    </div>
+</div>
+{% if page.error_message %}<p class="alert alert-error" role="alert">{{ page.error_message }}</p>{% endif %}
+<section class="panel narrow-panel">
+    <p class="muted">Register this server with the provider using the redirect address</p>
+    <div class="copy-row"><input class="copy-field" value="{{ page.callback_url }}" readonly data-select-on-focus><button type="button" class="button" data-copy>Copy</button></div>
+    <form method="post" action="{{ page.action_path }}" class="stack form-top" autocomplete="off">
+        <input type="hidden" name="_csrf" value="{{ page.csrf_token }}">
+        {% if page.is_new %}
+        <label class="field"><span>Name</span><input name="provider_name" value="{{ page.provider_name }}" required autofocus pattern="[a-z0-9][a-z0-9\-]*" placeholder="authentik"><small>Lower case letters, digits and dashes. It is in the address of the login and never changes.</small></label>
+        {% endif %}
+        <label class="field"><span>Name on the login page</span><input name="label" value="{{ page.label }}" required placeholder="Company login"></label>
+        <label class="field"><span>Issuer</span><input name="issuer" value="{{ page.issuer }}" required type="url" placeholder="https://auth.example.com/application/o/bearpond/"></label>
+        <label class="field"><span>Client id</span><input name="client_id" value="{{ page.client_id }}" required></label>
+        <label class="field"><span>Client secret</span><input name="secret" type="password" autocomplete="new-password"{% if page.is_new %} required{% endif %}><small>Kept in a file that only the server reads, and never shown again.{% if not page.is_new %} Leave it empty to keep the one that is {% if page.is_secret_present %}stored{% else %}missing{% endif %}.{% endif %}</small></label>
+        <details class="more"{% if page.error_message %} open{% endif %}>
+            <summary>More settings</summary>
+            <div class="stack">
+                <label class="field"><span>Scopes</span><input name="scopes_text" value="{{ page.scopes_text }}"></label>
+                <label class="field"><span>Claim with the groups</span><input name="groups_claim" value="{{ page.groups_claim }}"></label>
+                <label class="field"><span>Claim with the user name</span><input name="username_claim" value="{{ page.username_claim }}"></label>
+                <label class="field"><span>Claim with the full name</span><input name="name_claim" value="{{ page.name_claim }}"></label>
+                <label class="field"><span>Claim with the email address</span><input name="email_claim" value="{{ page.email_claim }}"></label>
+                <label class="field"><span>Logging out also ends the session at the provider</span>
+                    <select name="logout">{% for option in page.logout_options %}<option value="{{ option.value }}"{% if option.is_selected %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select>
+                </label>
+                <label class="field"><span>More parameters for the provider's login page, one name=value on each line</span><textarea name="authorize_parameters_text" rows="3" spellcheck="false">{{ page.authorize_parameters_text }}</textarea><small>Auth0 needs audience=&lt;address of the server&gt;.</small></label>
+                <label class="check"><input type="checkbox" name="is_insecure_http_allowed"{% if page.is_insecure_http_allowed %} checked{% endif %}>The provider may be reached without https (only for one on this machine)</label>
+            </div>
+        </details>
+        <div class="row-actions"><button class="button primary">Save the provider</button><a class="button" href="/admin/access">Cancel</a></div>
+    </form>
+</section>
+{% endblock %}
