@@ -54,13 +54,15 @@ class ObjectStore:
             # flush before the rename so an acknowledged upload is a durable upload
             f.flush()
             os.fsync(f.fileno())
-        actual_address: types.Sha256 = types.Sha256(digest.hexdigest())
 
+        # now, verify that the provided address matches the hash of the stream
+        actual_address: types.Sha256 = types.Sha256(digest.hexdigest())
         if actual_address != address:
             tmp_path.unlink(missing_ok=True)
             raise ObjectStoreError(
                 f"sha256 mismatch: expected {address}, got {actual_address}"
             )
+        # verify that the expected size matches the stream
         if size != expected_size:
             tmp_path.unlink(missing_ok=True)
             raise ObjectStoreError(
@@ -69,8 +71,10 @@ class ObjectStore:
             )
 
         if dest_path.exists():
+            # no need to keep the temp file if the "real" one already exists
             tmp_path.unlink(missing_ok=True)
         else:
+            # atomically rename the tmp file to the "real" file name
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(tmp_path, dest_path)
             utils.fsync_dir(dest_path.parent)
