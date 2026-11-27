@@ -201,7 +201,8 @@ class AuthRouter:
         self._login_page_path: str | None = login_page_path
 
         def attach_services(
-            request: Request, services: auth_services.AuthServices = Depends(services_dependency)
+            request: Request,
+            services: auth_services.AuthServices = Depends(services_dependency, scope="function"),
         ) -> None:
             request.state.auth_services = services
 

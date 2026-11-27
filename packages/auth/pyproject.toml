@@ -21,14 +21,14 @@ dependencies = [
 
 [project.optional-dependencies]
 fastapi = [
-    "fastapi>=0.110",
+    "fastapi>=0.121",
 ]
 postgres = [
     "psycopg[binary]>=3.2",
 ]
 dev = [
     "pytest>=8.0",
-    "fastapi>=0.110",
+    "fastapi>=0.121",
     "psycopg[binary]>=3.2",
     "testcontainers[postgres]>=4.13",
 ]

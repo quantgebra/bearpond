@@ -20,7 +20,9 @@ def get_server() -> server_module.Server:
 # ----------------------------------------------------------------------------------------------------------------------
 def get_session() -> Iterator[orm.Session]:
     # the session of the request is made here and shared by everything that needs it, authentication and the repository
-    # alike, so that what the request did is kept together when it has gone well and thrown away when it has not
+    # alike, so that what the request did is kept together when it has gone well and thrown away when it has not; every
+    # use of it is Depends(get_session, scope="function"), which commits before the response is sent, since by default
+    # FastAPI closes it after, and a client could then send its next request before what this one did was saved
     server: server_module.Server = server_module.get_server()
     with orm.Session(server.engine, expire_on_commit=False) as session:
         try:
@@ -32,12 +34,16 @@ def get_session() -> Iterator[orm.Session]:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def get_auth_services(session: orm.Session = Depends(get_session)) -> auth_services.AuthServices:
+def get_auth_services(
+    session: orm.Session = Depends(get_session, scope="function"),
+) -> auth_services.AuthServices:
     return server_module.get_server().auth.system.bind(session)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def get_repository(repo_name: str, session: orm.Session = Depends(get_session)) -> repository.Repository:
+def get_repository(
+    repo_name: str, session: orm.Session = Depends(get_session, scope="function")
+) -> repository.Repository:
     # the repository that the request is about, over the session of the request
     return server_module.get_server().get_repository(session, repo_name)
 

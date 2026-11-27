@@ -167,13 +167,19 @@ gate = auth_gate.AuthGate()
 app.include_router(auth_router.AuthRouter(get_services, lambda: gate).router)
 
 
-def require_write(request: Request, services: auth_services.AuthServices = Depends(get_services)):
+def require_write(
+    request: Request, services: auth_services.AuthServices = Depends(get_services, scope="function")
+):
     return gate.check_permission(request, services, "write", "repo_name")
 
 
 @app.post("/repos/{repo_name}")
 def write_repository(repo_name: str, found=Depends(require_write)): ...
 ```
+
+Use the dependency with `scope="function"`, as `AuthRouter` does. By default FastAPI runs the code after `yield` once
+the response has been sent, so the session would be committed after the client already has its answer, and the
+client's next request could miss what this one saved: a login whose cookie it already holds, for example.
 
 `AuthRouter` takes the dependency that makes the services of a request and a function that returns the gate, which it
 calls on every request, so that an application that is configured when it first has something to do can make it at
