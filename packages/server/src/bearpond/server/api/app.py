@@ -13,7 +13,7 @@ from starlette.status import (
 
 from .. import repository, server as server_module, transaction, utils
 from ..ui import pages
-from . import commits, dependencies, files, manifest, repos, transactions, version
+from . import commits, dependencies, files, health, manifest, repos, transactions, version
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -28,6 +28,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app: FastAPI = FastAPI(lifespan=lifespan)
 app.include_router(version.router)
+app.include_router(health.router)
 auth_endpoints: auth_router.AuthRouter = auth_router.AuthRouter(
     dependencies.get_auth_services, dependencies.get_auth_gate, "/auth", "/login"
 )

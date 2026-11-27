@@ -7,7 +7,7 @@ One server process hosts many repositories, all sharing one SQLite metadata data
 Requires Python 3.11+.
 
 ```bash
-pip install bearpond-server     # FastAPI, uvicorn, PyYAML; also installs bearpond-protocol
+pip install bearpond-server     # FastAPI, uvicorn, PyYAML; also installs bearpond-protocol and the bearpond-server command
 ```
 
 ## Running the server
@@ -25,9 +25,12 @@ object_store_root: objects
 ```
 
 ```bash
-export BEARPOND_CONFIG_DIR=/path/to/config
-uvicorn bearpond.server.api.app:app --port 8000
+bearpond-server serve --config-dir /path/to/config --port 8000
 ```
+
+`--config-dir` can be left out when `BEARPOND_CONFIG_DIR` names the folder, and `--host` is `127.0.0.1` unless you give another. `BEARPOND_DATABASE_URL`, when it is set, takes the place of `database_url` in `server.yaml`, so that a PostgreSQL password can be kept in the environment rather than in a file. The server logs to standard error, with the time on every line. `uvicorn bearpond.server.api.app:app` with `BEARPOND_CONFIG_DIR` set also runs it, for development.
+
+`GET /health` answers `{"status": "ok"}` when the server and its database are up. It needs no login, so whatever starts the server can wait on it.
 
 On Windows, set the variable with `set BEARPOND_CONFIG_DIR=C:\path\to\config` (cmd.exe) or `$env:BEARPOND_CONFIG_DIR = "C:\path\to\config"` (PowerShell). bearpond runs on Linux, macOS, and Windows; on Windows, directory-level fsync durability is unavailable and skipped (file-level fsyncs and SQLite transactions are unaffected).
 
@@ -46,6 +49,7 @@ auth:
 Authentication comes from [`quantgebra-auth`](https://github.com/quantgebra/bearpond/tree/main/packages/auth).
 
 - **First administrator.** A server with no accounts makes the account `admin` when it starts and writes a one-time link to its log: open it to choose the password. The link is made again on every start until it has been used.
+- **When nobody can log in,** the person who runs the server makes links on the server's machine, with the same config folder: `bearpond-server auth --config-dir DIR first-administrator` (a new link for `admin`), `... create-invite NAME --group GROUP` (a new account), and `... reset-link NAME` (a new password).
 - **Permissions.** `read` and `write` can be limited to one repository, and `admin` does everything: it is the only permission that makes a repository. Whoever has any permission may see the server. Out of the box the group `viewers` reads every repository, `writers` reads and writes every repository (and may revert), and `administrators` administer; administrators can add groups and change the rules.
 - **Authors.** A person who is logged in is the author of what they commit, whatever the client sends as the user.
 - **Logging in.** The endpoints are under `/auth` (`options`, `login`, `logout`, `me`, `password`, `invite/{token}` and, for OIDC providers, `oidc/{provider}/login`). A person who is logged in has a cookie, and anything that changes something also sends the `X-CSRF-Token` that `login` and `me` return.
@@ -83,6 +87,17 @@ objects/ab/abcdef…          # server-wide content-addressed object store (the 
 ```
 
 The metadata store is the system of record, and a commit is *content before pointers*: files are streamed into the object store during upload, then one atomic metadata transaction flips every path mapping and appends the commit record. The [project README](https://github.com/quantgebra/bearpond#how-it-works) explains the design in more detail.
+
+## Releases
+
+`scripts/build_release.py` builds a release of the server: one archive, `dist/release/bearpond-server-<version>-<stamp>.tgz`, that holds every wheel the server needs, so installing it downloads nothing. Run the script with the Python the server will run on, on the platform it will run on, because some of the wheels are compiled for one Python and one platform:
+
+```bash
+python3.11 scripts/build_release.py                                       # dist/release/
+python3.11 scripts/build_release.py --package-repository ../yarddog-packages  # also put it where YardDog finds it
+```
+
+The archive holds `wheels/`, `requirements.txt` (each wheel pinned by its hash), `BUILD-INFO` (the version, the git commit and whether the tree had uncommitted changes, the Python and the platform), `INSTALL` (installing by hand), `LICENSE` and `NOTICE`. To install it, make a venv with that Python and run `pip install --no-index --find-links wheels --require-hashes -r requirements.txt`. YardDog's deploy of BearPond does that once for each release, under `releases/<version>/`, writes `server.yaml` from the environment's variables, and keeps the database, the objects and the secrets of login providers in `data/`, which outlives every release.
 
 ## More
 
