@@ -181,6 +181,12 @@ import. It makes the endpoints under `/auth`: `options`, `login`, `logout`, `me`
 `oidc/{provider}/login` and `oidc/{provider}/callback`. What the pages for logging in and for choosing a password look
 like is the application's, and the links that the library makes point at `/invite/{token}` of the service's own address.
 
+An application that has a page for logging in passes its path as `login_page_path`. A login through a provider that
+does not work then sends the person back to that page as `{login_page_path}?error={code}&next={path}` instead of
+answering with JSON, and the page shows `LOGIN_FAILURE_MESSAGES[code]`. The codes are `failed`, `expired`, `cancelled`,
+`disabled` and `unknown_provider`. Only a code travels in the address, so nobody can put words of their own on the page
+with a link.
+
 Reading environment variables and command line flags is the application's too: the library takes values, never names of
 variables. `AuthTool` is the program for the person who runs the service (`create-invite`, `reset-link`,
 `first-administrator`), which an application calls with the arguments of its own command.

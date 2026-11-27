@@ -28,7 +28,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app: FastAPI = FastAPI(lifespan=lifespan)
 app.include_router(version.router)
-app.include_router(auth_router.AuthRouter(dependencies.get_auth_services, dependencies.get_auth_gate).router)
+auth_endpoints: auth_router.AuthRouter = auth_router.AuthRouter(
+    dependencies.get_auth_services, dependencies.get_auth_gate, "/auth", "/login"
+)
+app.include_router(auth_endpoints.router)
 app.include_router(repos.router)
 app.include_router(commits.router)
 app.include_router(transactions.router)

@@ -6,7 +6,7 @@
     <p>{{ page.message }}</p>
     <div class="row-actions">
         <a class="button" href="/repositories">Repositories</a>
-        <a class="button" href="/login">Log in as someone else</a>
+        {% if page.is_login_offered %}<a class="button" href="/login">Log in as someone else</a>{% endif %}
     </div>
 </section>
 {% endblock %}

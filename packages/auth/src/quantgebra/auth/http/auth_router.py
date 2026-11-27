@@ -1,6 +1,7 @@
 import logging
 from collections.abc import Iterator
 from typing import Callable
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
@@ -31,6 +32,16 @@ from . import cookies
 logger: logging.Logger = logging.getLogger(__name__)
 
 _LOGIN_FAILED_MESSAGE: str = "Logging in failed. Try again, or ask an administrator."
+
+# what a page for logging in says when a login through a provider did not work; the provider's endpoints send the
+# person back to that page with only one of these codes, so the address can never carry words of anyone else's
+LOGIN_FAILURE_MESSAGES: dict[str, str] = {
+    "failed": _LOGIN_FAILED_MESSAGE,
+    "expired": "The login was not started here, or took too long. Try again.",
+    "cancelled": "The login was cancelled at the provider.",
+    "disabled": "This account has been disabled.",
+    "unknown_provider": "There is no such login method.",
+}
 
 _STATUS_BY_KIND: dict[str, int] = {
     "invalid_request": HTTP_400_BAD_REQUEST,
@@ -177,14 +188,17 @@ class AuthRouter:
         services_dependency: Callable[..., Iterator[auth_services.AuthServices] | auth_services.AuthServices],
         gate_provider: Callable[[], auth_gate.AuthGate],
         prefix: str = "/auth",
+        login_page_path: str | None = None,
     ) -> None:
         # the endpoints that people log in and out with; what a page for logging in or choosing a password looks like
         # is the application's, which calls these; the services of a request are made by a dependency of the
         # application's, over the session that it owns for the request, and are put where the endpoints find them; the
         # gate is asked for on every request, so that an application that is configured when it first has something
-        # to do can make this before it is
+        # to do can make this before it is; an application that has a page for logging in names it, and a login
+        # through a provider that does not work sends the person back to it instead of answering with an error
         self._get_gate: Callable[[], auth_gate.AuthGate] = gate_provider
         self._prefix: str = prefix
+        self._login_page_path: str | None = login_page_path
 
         def attach_services(
             request: Request, services: auth_services.AuthServices = Depends(services_dependency)
@@ -298,18 +312,20 @@ class AuthRouter:
     ) -> RedirectResponse:
         # sends the person to the provider, and remembers what ties their coming back to this login
         services: auth_services.AuthServices = self._get_services(request)
+        safe_next_path: str = make_safe_next_path(next_path)
         provider: oidc_provider.OidcProvider | None = services.providers.find_provider(services.session, provider_name)
-        if provider is None:
-            raise HTTPException(HTTP_404_NOT_FOUND, "There is no such login method.")
-
-        try:
-            start: oidc_provider.LoginStart = provider.begin(self._get_callback_address(services, provider_name))
-        except (oidc_provider.OidcLoginError, auth_error.AuthError) as error:
-            logger.error(f"could not start a login through the provider {provider_name}: {error}")
-            raise HTTPException(HTTP_400_BAD_REQUEST, _LOGIN_FAILED_MESSAGE) from error
-
-        services.pending_logins.add_started(provider_name, start.pending, make_safe_next_path(next_path))
-        return RedirectResponse(start.url, status_code=HTTP_303_SEE_OTHER)
+        response: RedirectResponse
+        if provider is not None:
+            try:
+                start: oidc_provider.LoginStart = provider.begin(self._get_callback_address(services, provider_name))
+                services.pending_logins.add_started(provider_name, start.pending, safe_next_path)
+                response = RedirectResponse(start.url, status_code=HTTP_303_SEE_OTHER)
+            except (oidc_provider.OidcLoginError, auth_error.AuthError) as error:
+                logger.error(f"could not start a login through the provider {provider_name}: {error}")
+                response = self._refuse_login(HTTP_400_BAD_REQUEST, "failed", safe_next_path, error)
+        else:
+            response = self._refuse_login(HTTP_404_NOT_FOUND, "unknown_provider", safe_next_path, None)
+        return response
 
     # ------------------------------------------------------------------------------------------------------------------
     def finish_oidc_login(self, provider_name: str, request: Request) -> RedirectResponse:
@@ -320,21 +336,13 @@ class AuthRouter:
         started: pending_logins.StartedLogin | None = services.pending_logins.take_started(
             request.query_params.get("state", "")
         )
-        if provider is None or started is None or started.provider_name != provider_name:
-            raise HTTPException(HTTP_400_BAD_REQUEST, "The login was not started here, or took too long. Try again.")
-
-        try:
-            callback_url: str = f"{self._get_callback_address(services, provider_name)}?{request.url.query}"
-            identity: external_identity.ExternalIdentity = provider.finish(callback_url, started.pending)
-            login: auth_service.Login = services.oidc.login(provider.settings, identity)
-        except auth_error.AuthError as error:
-            raise to_http_exception(error) from error
-        except oidc_provider.OidcLoginError as error:
-            logger.error(f"logging in through the provider {provider_name} failed: {error}")
-            raise HTTPException(HTTP_400_BAD_REQUEST, _LOGIN_FAILED_MESSAGE) from error
-
-        response: RedirectResponse = RedirectResponse(started.next_path, status_code=HTTP_303_SEE_OTHER)
-        cookies.set_session_cookie(response, services.auth.config, self._get_gate().cookie_name, login.token)
+        response: RedirectResponse
+        if started is None:
+            response = self._refuse_login(HTTP_400_BAD_REQUEST, "expired", "/", None)
+        elif provider is None or started.provider_name != provider_name:
+            response = self._refuse_login(HTTP_400_BAD_REQUEST, "expired", started.next_path, None)
+        else:
+            response = self._finish_started_login(services, provider, started, request)
         return response
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -348,6 +356,47 @@ class AuthRouter:
         # the address that the provider sends people back to, which is the one that is registered with it
         base_url: str = services.auth.config.base_url.rstrip("/")
         return f"{base_url}{self._prefix}/oidc/{provider_name}/callback"
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def _refuse_login(
+        self, status_code: int, failure_code: str, next_path: str, error: Exception | None
+    ) -> RedirectResponse:
+        # a login through a provider that did not work: the person is sent back to the application's page for logging
+        # in, which says what went wrong, or, for an application with no such page, the request fails
+        if self._login_page_path is None:
+            raise HTTPException(status_code, LOGIN_FAILURE_MESSAGES[failure_code]) from error
+        location: str = f"{self._login_page_path}?error={failure_code}&next={quote(next_path, safe='/')}"
+        return RedirectResponse(location, status_code=HTTP_303_SEE_OTHER)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    def _finish_started_login(
+        self,
+        services: auth_services.AuthServices,
+        provider: oidc_provider.OidcProvider,
+        started: pending_logins.StartedLogin,
+        request: Request,
+    ) -> RedirectResponse:
+        # the provider's proof is checked and the person logged in; when that fails, nothing of it is kept
+        provider_name: str = provider.settings.provider_name
+        response: RedirectResponse
+        try:
+            callback_url: str = f"{self._get_callback_address(services, provider_name)}?{request.url.query}"
+            identity: external_identity.ExternalIdentity = provider.finish(callback_url, started.pending)
+            login: auth_service.Login = services.oidc.login(provider.settings, identity)
+            response = RedirectResponse(started.next_path, status_code=HTTP_303_SEE_OTHER)
+            cookies.set_session_cookie(response, services.auth.config, self._get_gate().cookie_name, login.token)
+        except auth_error.AuthError as error:
+            services.session.rollback()
+            failure_code: str = "disabled" if error.kind == "disabled" else "failed"
+            status_code: int = _STATUS_BY_KIND.get(error.kind, HTTP_400_BAD_REQUEST)
+            response = self._refuse_login(status_code, failure_code, started.next_path, error)
+        except oidc_provider.OidcLoginError as error:
+            logger.error(f"logging in through the provider {provider_name} failed: {error}")
+            services.session.rollback()
+            is_cancelled: bool = request.query_params.get("error") == "access_denied"
+            failure_code = "cancelled" if is_cancelled else "failed"
+            response = self._refuse_login(HTTP_400_BAD_REQUEST, failure_code, started.next_path, error)
+        return response
 
     # ------------------------------------------------------------------------------------------------------------------
     def _make_me_response(self, services: auth_services.AuthServices, login: auth_service.Login) -> MeResponse:

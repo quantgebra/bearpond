@@ -293,3 +293,33 @@ def test_15_a_login_page_offers_the_form_for_accounts_of_this_server(enforced_ur
 
     assert 'name="username"' in login_page.text
     assert 'name="password"' in login_page.text
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_16_an_address_that_is_no_page_says_so_to_a_browser_and_in_json_to_a_program(ui: httpx.Client) -> None:
+    browser_headers: dict[str, str] = {"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
+    in_browser: httpx.Response = ui.get("/no/such/page", headers=browser_headers)
+    from_program: httpx.Response = ui.get("/no/such/page")
+    missing_repository: httpx.Response = ui.get("/repos/nope/manifest", headers=browser_headers)
+
+    assert in_browser.status_code == 404
+    assert in_browser.headers["content-type"].startswith("text/html")
+    assert "There is no page at this address." in in_browser.text
+    assert "Log in as someone else" not in in_browser.text
+    assert from_program.status_code == 404
+    assert from_program.json() == {"detail": "Not Found"}
+    assert missing_repository.status_code == 404
+    assert "detail" in missing_repository.json()
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_17_a_login_through_a_provider_that_did_not_work_is_explained_on_the_login_page(enforced_url: str) -> None:
+    with httpx.Client(base_url=enforced_url, timeout=30.0) as browser:
+        disabled: httpx.Response = browser.get("/login?error=disabled&next=/repositories/alpha")
+        made_up: httpx.Response = browser.get("/login?error=Your+account+is+locked,+call+us")
+
+    assert "This account has been disabled." in disabled.text
+    assert 'name="next" value="/repositories/alpha"' in disabled.text
+    assert made_up.status_code == 200
+    assert "call us" not in made_up.text
+    assert 'role="alert"' not in made_up.text

@@ -1,10 +1,12 @@
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi import exception_handlers
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException
 from starlette.staticfiles import StaticFiles
-from starlette.status import HTTP_303_SEE_OTHER
+from starlette.status import HTTP_303_SEE_OTHER, HTTP_404_NOT_FOUND
 
 from . import access_page
 from . import account_page
@@ -32,6 +34,8 @@ class RefusedModel(BaseModel):
     # ==================================================================================================================
     status_code: int
     message: str
+    # whether logging in as someone else could help, which it cannot when the page is not there at all
+    is_login_offered: bool
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -65,10 +69,29 @@ def mount_pages(app: FastAPI) -> None:
 
     def handle_page_refused(request: Request, error: Exception) -> Response:
         assert isinstance(error, page_resource.PageRefusedError)
-        title: str = "Not found" if error.status_code == 404 else "Refused"
+        return send_refused(error.status_code, error.message)
+
+    # an address that is no route at all is a page that is not there, for a browser; a program that asked for one, and
+    # every route that answers an error of its own, gets the usual answer in JSON
+    async def handle_http_error(request: Request, error: Exception) -> Response:
+        assert isinstance(error, HTTPException)
+        is_unrouted: bool = error.status_code == HTTP_404_NOT_FOUND and "endpoint" not in request.scope
+        is_missing_page: bool = is_unrouted and "text/html" in request.headers.get("accept", "")
+        response: Response
+        if is_missing_page:
+            response = send_refused(HTTP_404_NOT_FOUND, "There is no page at this address.")
+        else:
+            response = await exception_handlers.http_exception_handler(request, error)
+        return response
+
+    def send_refused(status_code: int, message: str) -> HTMLResponse:
+        title: str = "Not found" if status_code == HTTP_404_NOT_FOUND else "Refused"
         head: page_renderer.PageHead = page_renderer.PageHead(title=title, section="", is_bare=True)
-        model: RefusedModel = RefusedModel(status_code=error.status_code, message=error.message)
-        return HTMLResponse(renderer.render("refused", head, model), status_code=error.status_code)
+        model: RefusedModel = RefusedModel(
+            status_code=status_code, message=message, is_login_offered=status_code != HTTP_404_NOT_FOUND
+        )
+        return HTMLResponse(renderer.render("refused", head, model), status_code=status_code)
 
     app.add_exception_handler(page_resource.LoginRequiredError, handle_login_required)
     app.add_exception_handler(page_resource.PageRefusedError, handle_page_refused)
+    app.add_exception_handler(HTTPException, handle_http_error)

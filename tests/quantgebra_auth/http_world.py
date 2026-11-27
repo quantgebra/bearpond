@@ -34,10 +34,17 @@ class HttpWorld:
     # ==================================================================================================================
 
     # ------------------------------------------------------------------------------------------------------------------
-    def __init__(self, engine: sqlalchemy.Engine, secrets_directory: Path, mode: str = "enforced") -> None:
+    def __init__(
+        self,
+        engine: sqlalchemy.Engine,
+        secrets_directory: Path,
+        mode: str = "enforced",
+        login_page_path: str | None = None,
+    ) -> None:
         # a small service with the library's endpoints and two routes of its own, one that needs the permission to read
         # a repository and one that needs the permission to write it; every request has a session of its own, which is
-        # committed when the request has gone well, the way an application owns it
+        # committed when the request has gone well, the way an application owns it; a service with a page for logging
+        # in of its own names it
         self.fake_provider: fake_oidc_provider.FakeOidcProvider = fake_oidc_provider.FakeOidcProvider()
         self.engine: sqlalchemy.Engine = engine
         config: auth_config.AuthConfig = auth_config.AuthConfig(
@@ -64,7 +71,10 @@ class HttpWorld:
                     session.rollback()
                     raise
 
-        self.app.include_router(auth_router.AuthRouter(get_services, lambda: self.gate).router)
+        endpoints: auth_router.AuthRouter = auth_router.AuthRouter(
+            get_services, lambda: self.gate, "/auth", login_page_path
+        )
+        self.app.include_router(endpoints.router)
 
         def require_read(
             request: Request, services: auth_services.AuthServices = Depends(get_services)

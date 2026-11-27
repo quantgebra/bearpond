@@ -77,13 +77,16 @@ class LoginPage(page_resource.PageResource):
     def show_login(
         self,
         next_path: str = Query("/", alias="next"),
+        failure_code: str = Query("", alias="error"),
         services: auth_services.AuthServices = Depends(dependencies.get_auth_services),
     ) -> Response:
-        # when nobody logs in there is nothing to do here, and the person goes where they were going
+        # when nobody logs in there is nothing to do here, and the person goes where they were going; a login through a
+        # provider that did not work comes back here with a code, and the page says what that code means
         safe_next_path: str = auth_router.make_safe_next_path(next_path)
+        error_message: str | None = auth_router.LOGIN_FAILURE_MESSAGES.get(failure_code)
         response: Response
         if services.auth.config.mode == "enforced":
-            response = self._send_login(services, safe_next_path, "", None, 200)
+            response = self._send_login(services, safe_next_path, "", error_message, 200)
         else:
             response = RedirectResponse(safe_next_path, status_code=HTTP_303_SEE_OTHER)
         return response

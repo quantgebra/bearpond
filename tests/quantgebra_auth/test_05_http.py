@@ -1,10 +1,13 @@
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 import sqlalchemy
 
 from quantgebra.auth.core import actor
 from quantgebra.auth.core import grant
 from quantgebra.auth.core import grant_rule
+from quantgebra.auth.core import user_record
 from quantgebra.auth.core import group_mapping_record
 from quantgebra.auth.local import local_authentication
 
@@ -276,3 +279,54 @@ def test_14_changing_the_password_over_http(engine: sqlalchemy.Engine, tmp_path:
     assert wrong.status_code == 401
     assert right.status_code == 204
     assert relogin.status_code == 200
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_15_a_service_with_a_login_page_gets_back_the_person_whose_login_did_not_work(
+    engine: sqlalchemy.Engine, tmp_path: Path
+) -> None:
+    world: http_world.HttpWorld = http_world.HttpWorld(engine, tmp_path, "enforced", "/login")
+    administrator_client = world.make_other_client()
+    world.log_first_administrator_in(administrator_client)
+    world.add_provider(administrator_client)
+    browser = world.make_other_client()
+
+    # the person says no at the provider, which sends them back with an error instead of a code
+    started: httpx.Response = browser.get("/auth/oidc/idp/login?next=/repos/bearpond")
+    state: str = parse_qs(urlparse(started.headers["location"]).query)["state"][0]
+    cancelled: httpx.Response = browser.get(f"/auth/oidc/idp/callback?error=access_denied&state={state}")
+    never_started: httpx.Response = browser.get("/auth/oidc/idp/callback?code=abc&state=never-started")
+    unknown_provider: httpx.Response = browser.get("/auth/oidc/nobody/login?next=/repos/bearpond")
+
+    assert cancelled.status_code == 303
+    assert cancelled.headers["location"] == "/login?error=cancelled&next=/repos/bearpond"
+    assert never_started.headers["location"] == "/login?error=expired&next=/"
+    assert unknown_provider.headers["location"] == "/login?error=unknown_provider&next=/repos/bearpond"
+    assert "set-cookie" not in cancelled.headers
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_16_a_disabled_account_is_turned_away_at_the_callback_with_nothing_kept(
+    engine: sqlalchemy.Engine, tmp_path: Path
+) -> None:
+    world: http_world.HttpWorld = http_world.HttpWorld(engine, tmp_path, "enforced", "/login")
+    administrator_client = world.make_other_client()
+    world.log_first_administrator_in(administrator_client)
+    world.add_provider(administrator_client)
+    world.finish_login_at_provider(world.make_other_client(), ALICE_CLAIMS)
+    with world.open_services() as services:
+        administrator: actor.Actor = world.get_actor(services, administrator_client)
+        alice: user_record.UserRecord | None = user_record.UserRecord.get_by_issuer_and_username(
+            services.session, fake_oidc_provider.ISSUER, "alice"
+        )
+        assert alice is not None
+        services.auth.set_user_disabled(administrator, alice.user_id, True)
+    browser = world.make_other_client()
+
+    started: httpx.Response = browser.get("/auth/oidc/idp/login?next=/repos/bearpond")
+    callback_url: str = world.fake_provider.approve(started.headers["location"], ALICE_CLAIMS)
+    turned_away: httpx.Response = browser.get(f"/auth/oidc/idp/callback?{urlparse(callback_url).query}")
+
+    assert turned_away.status_code == 303
+    assert turned_away.headers["location"] == "/login?error=disabled&next=/repos/bearpond"
+    assert "set-cookie" not in turned_away.headers
