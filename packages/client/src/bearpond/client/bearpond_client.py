@@ -377,7 +377,8 @@ class BearpondClient:
     # ------------------------------------------------------------------------------------------------------------------
     def add(self, targets: list[Path]) -> list[types.FileMetadata]:
         # stages each target for the next commit: directories expand to the files beneath them, and a
-        # file's lake path is its location relative to the workspace root. Re-adding a path updates its entry.
+        # file's lake path is its location relative to the workspace root. Re-adding a path updates its entry. Returns
+        # only what was staged: a tracked file identical to what the workspace has is looked at and left out.
         
         # make sure we don't have a hanging interrupted pull
         self._require_no_pending_pull()
@@ -434,14 +435,13 @@ class BearpondClient:
                         new_sha256=hashed.sha256,
                         new_size=hashed.size,
                     )
+                    result_list.append(entry)
             else:
                 # an untracked path: stage it as an add, and clear any pending removal/update of the same path
                 staged_removed_dict.pop(rel_path, None)
                 staged_updated_dict.pop(rel_path, None)
                 staged_added_dict[rel_path] = entry
-            
-            # add to the result_list
-            result_list.append(entry)
+                result_list.append(entry)
         
         # update the staged manifest with the new lists
         self._save_staged(

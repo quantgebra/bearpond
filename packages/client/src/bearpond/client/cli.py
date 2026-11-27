@@ -121,10 +121,14 @@ def cmd_clone(args: argparse.Namespace) -> None:
 def cmd_add(args: argparse.Namespace) -> None:
     # staging is purely local — no server contact until commit
     client: bearpond_client.BearpondClient = bearpond_client.BearpondClient.discover(Path.cwd())
+    # only what changed is staged and listed: a file the same as the workspace has it is left as it is
     staged: list[types.FileMetadata] = client.add(args.paths)
     for entry in staged:
         print(f"  staged: {entry.path}")
-    print(f"Staged {len(staged)} file(s)")
+    if staged:
+        print(f"Staged {len(staged)} file(s)")
+    else:
+        print("Nothing to stage: the files are as the workspace has them")
 
 
 # ----------------------------------------------------------------------------------------------------------------------

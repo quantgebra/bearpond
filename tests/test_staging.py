@@ -141,6 +141,35 @@ def test_rm_stages_removal_with_recorded_metadata(workdir: Path) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+def test_adding_a_directory_stages_and_reports_only_what_changed(
+    workdir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # two tracked files, one of them since changed on disk, and a new file beside them
+    write_workspace_manifest(
+        workdir,
+        3,
+        {
+            HIVE_PATH: [conftest.sha256_hex(CONTENT), len(CONTENT)],
+            OTHER_PATH: [conftest.sha256_hex(b"what it was"), len(b"what it was")],
+        },
+    )
+    (workdir / "year=2024/month=03").mkdir()
+    (workdir / "year=2024/month=03/new.parquet").write_bytes(b"new")
+
+    cli.cmd_add(argparse.Namespace(paths=[Path("year=2024")]))
+    printed: str = capsys.readouterr().out
+    cli.cmd_add(argparse.Namespace(paths=[Path(HIVE_PATH)]))
+    printed_again: str = capsys.readouterr().out
+
+    status: bearpond_client.WorkspaceStatus = bearpond_client.BearpondClient(workdir).status()
+    assert [f.path for f in status.staged_updated] == [OTHER_PATH]
+    assert [f.path for f in status.staged_added] == ["year=2024/month=03/new.parquet"]
+    assert HIVE_PATH not in printed
+    assert "Staged 2 file(s)" in printed
+    assert "Nothing to stage" in printed_again
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 def test_rm_rejects_untracked_path(workdir: Path) -> None:
     with pytest.raises(server_client.BearpondError, match="not tracked"):
         bearpond_client.BearpondClient(workdir).rm([Path(HIVE_PATH)])
